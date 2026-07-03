@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type Run, type RunDetail, type StepResult, type Defect } from '../api/client';
 import StatusBadge from '../components/StatusBadge';
+import StepShots from '../components/StepShots';
 
 export default function Results() {
   const [runs,    setRuns]   = useState<Run[]>([]);
@@ -79,7 +80,7 @@ export default function Results() {
               <div className="section-title">Test Results ({detail.results.length})</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8, maxHeight: 420, overflowY: 'auto' }}>
                 {detail.results.map(r => (
-                  <ResultCard key={r.test_id} result={r} defect={defects.find(d => d.test_id === r.test_id)} />
+                  <ResultCard key={r.test_id} result={r} runId={detail.run_id} defect={defects.find(d => d.test_id === r.test_id)} />
                 ))}
               </div>
             </>
@@ -98,7 +99,7 @@ const SEVERITY_COLOR: Record<string, string> = {
   critical: 'var(--red)', high: '#f97316', medium: 'var(--yellow)', low: 'var(--muted)',
 };
 
-function ResultCard({ result, defect }: { result: RunDetail['results'][0]; defect?: Defect }) {
+function ResultCard({ result, runId, defect }: { result: RunDetail['results'][0]; runId: string; defect?: Defect }) {
   const [open, setOpen] = useState(false);
   const passed = result.step_results?.filter(s => s.success).length ?? 0;
   const total  = result.step_results?.length ?? 0;
@@ -134,7 +135,7 @@ function ResultCard({ result, defect }: { result: RunDetail['results'][0]; defec
               {defect.probable_fix && <div style={{ fontSize: 11, color: 'var(--muted)' }}><strong>Fix:</strong> {defect.probable_fix}</div>}
             </div>
           )}
-          {result.step_results?.map((s, i) => <StepRow key={i} step={s} idx={i+1} />)}
+          {result.step_results?.map((s, i) => <StepRow key={i} step={s} idx={i+1} runId={runId} />)}
           {result.vision_summary && (
             <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>{result.vision_summary}</p>
           )}
@@ -144,15 +145,19 @@ function ResultCard({ result, defect }: { result: RunDetail['results'][0]; defec
   );
 }
 
-function StepRow({ step, idx }: { step: StepResult; idx: number }) {
+function StepRow({ step, idx, runId }: { step: StepResult; idx: number; runId: string }) {
   return (
     <div className="step-row">
       <span className="step-icon">{step.success ? '✓' : '✗'}</span>
       <div className="step-text">
         <div>{step.step}</div>
         {step.note && <div className="step-meta">{step.note}</div>}
+        {step.observation && !step.success && (
+          <div className="step-meta" style={{ color: 'var(--red)' }}>{step.observation}</div>
+        )}
         {step.expected_screen && <div className="step-meta">expected: {step.expected_screen} → actual: {step.actual_screen}</div>}
         {step.method && <span className="tag" style={{ marginTop: 2 }}>{step.method}</span>}
+        <StepShots runId={runId} step={step} />
       </div>
     </div>
   );

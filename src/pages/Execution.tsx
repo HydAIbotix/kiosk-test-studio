@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type TestCase, type TcPlan, type TcPlanStep } from '../api/client';
+import { planSig } from './TestIntake';
 
 const MODES = [
   { value: 'playwright', label: 'Playwright', sub: 'Browser proxy',      icon: '🌐',
@@ -33,15 +34,24 @@ function TcPlanPreview({ tc, plan }: { tc: TestCase; plan: TcPlan | null }) {
   const [open, setOpen] = useState(false);
   const devColors = buildDeviceColors(plan);
 
-  // Group consecutive steps by device, preserving order
+  // Group steps by target device.  When every step runs on the SAME device (the common case),
+  // show a single device header for the whole plan.  Only when steps genuinely span MULTIPLE
+  // devices do we split into per-device groups — and steps without a device (e.g. validations)
+  // stay in the current group instead of breaking it into a fresh header.
   const groups: { device: string | null; steps: { step: TcPlanStep; idx: number }[] }[] = [];
   if (plan) {
-    plan.steps.forEach((step, idx) => {
-      const dev = step.device ?? null;
-      const last = groups[groups.length - 1];
-      if (last && last.device === dev) last.steps.push({ step, idx });
-      else groups.push({ device: dev, steps: [{ step, idx }] });
-    });
+    const distinctDevices = [...new Set(plan.steps.map(s => s.device).filter(Boolean))] as string[];
+    if (distinctDevices.length <= 1) {
+      groups.push({ device: distinctDevices[0] ?? null, steps: plan.steps.map((step, idx) => ({ step, idx })) });
+    } else {
+      plan.steps.forEach((step, idx) => {
+        const dev = step.device ?? null;
+        const last = groups[groups.length - 1];
+        if (dev && (!last || last.device !== dev)) groups.push({ device: dev, steps: [{ step, idx }] });
+        else if (!last) groups.push({ device: null, steps: [{ step, idx }] });
+        else last.steps.push({ step, idx });
+      });
+    }
   }
 
   // Badge colours for devices referenced by this TC
@@ -98,67 +108,53 @@ function TcPlanPreview({ tc, plan }: { tc: TestCase; plan: TcPlan | null }) {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 export default function Execution({ onNav }: { onNav: (p: string) => void }) {
-  const [mode,       setMode]    = useState('playwright');
-  const [robotId,    setRobotId] = useState('R-01');
-  const [status,     setStatus]  = useState('');
-  const [starting,   setStarting]= useState(false);
+  const [backend,  setBackend] = useState('');   // execution backend — read from Configuration
+  const [robotId,  setRobotId] = useState('R-01');
+  const [status,   setStatus]  = useState('');
+  const [starting, setStarting]= useState(false);
 
-  // TC selection — loaded from API, seeded from localStorage selection
+  // The execution backend has a SINGLE source of truth: Configuration → Robot Connection.
+  useEffect(() => { api.getConfig().then(c => setBackend(c.robot_backend)).catch(() => {}); }, []);
+
+  // Selection is managed in Test Intake and persisted in localStorage
+  const selectedIds = new Set<string>(api.getSelectedTcs());
+
+  // Load TC details from API so we can display summaries and resolve plans
   const [availableTcs, setAvailable] = useState<TestCase[]>([]);
-  const [selectedIds,  setSelected]  = useState<Set<string>>(() => new Set(api.getSelectedTcs()));
   const [tcLoading,    setTcLoading] = useState(false);
-  const [tcError,      setTcError]   = useState('');
 
   // Cached plans for preview (from localStorage, keyed by test_id)
   const [plans, setPlans] = useState<Record<string, TcPlan | null>>({});
 
   useEffect(() => {
     setTcLoading(true);
-    setTcError('');
     api.getTestCases()
-      .then(tcs => {
-        setAvailable(tcs);
-        // Drop stale saved IDs that no longer exist in the DB
-        const validIds = new Set(tcs.map(t => t.test_id));
-        setSelected(prev => {
-          const cleaned = new Set([...prev].filter(id => validIds.has(id)));
-          if (cleaned.size !== prev.size) api.saveSelectedTcs([...cleaned]);
-          return cleaned;
-        });
-      })
-      .catch(() => setTcError('Could not load test cases — is the backend running?'))
+      .then(tcs => setAvailable(tcs))
       .finally(() => setTcLoading(false));
   }, []);
 
-  // Load cached plans from localStorage whenever selection changes
   useEffect(() => {
     const loaded: Record<string, TcPlan | null> = {};
     for (const id of selectedIds) {
-      try { loaded[id] = JSON.parse(localStorage.getItem(`tc_plan_${id}`) || 'null'); }
-      catch { loaded[id] = null; }
+      try {
+        const raw = localStorage.getItem(`tc_plan_${id}`);
+        const p = raw ? (JSON.parse(raw) as TcPlan & { _src?: string }) : null;
+        const tc = availableTcs.find(t => t.test_id === id);
+        // hide a cached plan whose source test case has changed since it was generated
+        loaded[id] = (p && tc && p._src !== undefined && p._src !== planSig(tc)) ? null : p;
+      } catch { loaded[id] = null; }
     }
     setPlans(loaded);
-  }, [selectedIds]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableTcs]);
 
-  const toggleTc = (id: string) => {
-    setSelected(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      api.saveSelectedTcs([...next]);
-      return next;
-    });
-  };
-
-  const selectAll = () => { const ids = availableTcs.map(t => t.test_id); setSelected(new Set(ids)); api.saveSelectedTcs(ids); };
-  const clearAll  = () => { setSelected(new Set()); api.saveSelectedTcs([]); };
-
-  const filterTc = [...selectedIds].join(',') || undefined;
   const selectedTcs = availableTcs.filter(tc => selectedIds.has(tc.test_id));
+  const filterTc    = [...selectedIds].join(',') || undefined;
 
   const startRun = async () => {
     setStarting(true); setStatus('');
     try {
-      const r = await api.startRun({ robot_id: robotId, filter_tc: filterTc, mode });
+      const r = await api.startRun({ robot_id: robotId, filter_tc: filterTc, mode: backend });
       setStatus(`Run started: ${r.run_id}`);
       setTimeout(() => onNav('monitor'), 800);
     } catch (e) {
@@ -168,77 +164,69 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
 
   return (
     <div>
-      {/* Mode selector */}
+      {/* Execution backend — read-only; set in Configuration → Robot Connection */}
       <div className="section">
-        <div className="section-title">Execution Mode</div>
-        <div className="grid-3">
-          {MODES.map(m => (
-            <button key={m.value} onClick={() => setMode(m.value)}
-              style={{
-                cursor: 'pointer', textAlign: 'left', padding: 16, borderRadius: 8,
-                border: `1px solid ${mode === m.value ? 'var(--accent)' : 'var(--border)'}`,
-                background: mode === m.value ? 'rgba(99,102,241,0.1)' : 'var(--surface)',
-                color: 'var(--text)',
-              }}>
-              <div style={{ fontSize: 22, marginBottom: 6 }}>{m.icon}</div>
-              <div style={{ fontWeight: 700, fontSize: 13 }}>{m.label}</div>
-              <div style={{ fontSize: 11, color: 'var(--accent2)', marginBottom: 6, fontWeight: 500 }}>{m.sub}</div>
-              <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>{m.desc}</div>
-              {mode === m.value && <div style={{ marginTop: 8, fontSize: 11, color: 'var(--accent2)', fontWeight: 600 }}>✓ Selected</div>}
-            </button>
-          ))}
+        <div className="row" style={{ marginBottom: 8 }}>
+          <div className="section-title" style={{ margin: 0 }}>Execution Backend</div>
+          <span className="spacer" />
+          <button className="btn btn-secondary btn-sm" onClick={() => onNav('configuration')}>
+            Change in Configuration →
+          </button>
         </div>
+        {(() => {
+          const m = MODES.find(x => x.value === backend);
+          return (
+            <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 16, borderColor: 'var(--accent)' }}>
+              <div style={{ fontSize: 26 }}>{m?.icon ?? '⏳'}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>
+                  {m?.label ?? (backend ? backend : 'Loading…')}
+                  {backend === 'real' && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent2)' }}>(verify in Robot Setup)</span>}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+                  {m?.desc ?? 'Backend is chosen once in Configuration → Robot Connection and used for every run.'}
+                </div>
+              </div>
+              {backend === 'real' && (
+                <button className="btn btn-secondary btn-sm" onClick={() => onNav('robot-setup')}>Robot Setup →</button>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       <div className="grid-2" style={{ alignItems: 'start' }}>
-        {/* Left: TC selector */}
+        {/* Left: selected TCs (read-only) + start */}
         <div className="card section">
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Select Test Cases</div>
+          <div className="row" style={{ marginBottom: 4 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>Selected Test Cases</div>
+            <span className="spacer" />
+            <button className="btn btn-secondary btn-sm" onClick={() => onNav('test-intake')}>
+              Edit in Test Intake →
+            </button>
+          </div>
           <p className="text-muted" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.5 }}>
-            Tick the test cases to include in this run. Kiosk routing is determined automatically from each test's steps.
+            {selectedIds.size === 0
+              ? 'No test cases selected — all will run. Go to Test Intake to make a selection.'
+              : `${selectedIds.size} test case${selectedIds.size > 1 ? 's' : ''} queued for this run.`}
           </p>
 
           {tcLoading && <p className="text-muted" style={{ fontSize: 12 }}>Loading…</p>}
-          {tcError   && <p style={{ fontSize: 12, color: 'var(--red)' }}>{tcError}</p>}
 
-          {!tcLoading && !tcError && availableTcs.length === 0 && (
-            <p className="text-muted" style={{ fontSize: 12 }}>
-              No test cases in the database. Go to <strong>Test Intake</strong> and import an Excel file first.
-            </p>
-          )}
-
-          {availableTcs.length > 0 && (
-            <>
-              <div className="row" style={{ marginBottom: 6 }}>
-                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                  {selectedIds.size === 0 ? 'None selected — all will run' : `${selectedIds.size} of ${availableTcs.length} selected`}
-                </span>
-                <span className="spacer" />
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button className="btn btn-secondary btn-sm" onClick={selectAll}>All</button>
-                  <button className="btn btn-secondary btn-sm" onClick={clearAll}>None</button>
+          {!tcLoading && selectedTcs.length > 0 && (
+            <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 0', marginBottom: 14 }}>
+              {selectedTcs.map(tc => (
+                <div key={tc.test_id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 12px', borderBottom: '1px solid var(--border)' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent2)' }}>{tc.test_id}</div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.4 }}>{tc.summary}</div>
+                  </div>
+                  {tc.kiosk_id && (
+                    <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0, alignSelf: 'center' }}>{tc.kiosk_id}</span>
+                  )}
                 </div>
-              </div>
-
-              <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 0', marginBottom: 14 }}>
-                {availableTcs.map(tc => {
-                  const checked = selectedIds.has(tc.test_id);
-                  return (
-                    <label key={tc.test_id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 12px', cursor: 'pointer', background: checked ? 'rgba(99,102,241,0.07)' : 'transparent' }}>
-                      <input type="checkbox" checked={checked} onChange={() => toggleTc(tc.test_id)}
-                        style={{ accentColor: 'var(--accent)', marginTop: 2, flexShrink: 0 }} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent2)' }}>{tc.test_id}</div>
-                        <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.4 }}>{tc.summary}</div>
-                      </div>
-                      {tc.kiosk_id && (
-                        <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0, alignSelf: 'center' }}>{tc.kiosk_id}</span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            </>
+              ))}
+            </div>
           )}
 
           {/* Robot ID + start */}
@@ -247,8 +235,7 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
             <input className="form-input" value={robotId} onChange={e => setRobotId(e.target.value)} style={{ width: 140 }} />
           </div>
 
-          <button className="btn btn-primary" onClick={startRun}
-            disabled={starting || availableTcs.length === 0}>
+          <button className="btn btn-primary" onClick={startRun} disabled={starting}>
             {starting ? '⏳ Starting…' : `▶ Start Run${selectedIds.size > 0 ? ` (${selectedIds.size} TCs)` : ' (all TCs)'}`}
           </button>
 
@@ -263,13 +250,13 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
         <div className="card section">
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Execution Plan Preview</div>
           <p className="text-muted" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
-            Steps for each selected test case, grouped by target kiosk. Click a row to expand.
+            Steps for each selected test case, grouped by target device. Click a row to expand.
             Plans are generated in <strong>Test Intake</strong>.
           </p>
 
           {selectedTcs.length === 0 ? (
             <div className="empty-state" style={{ padding: '30px 0' }}>
-              <p style={{ fontSize: 13 }}>Select test cases on the left to preview their steps.</p>
+              <p style={{ fontSize: 13 }}>No test cases selected. Go to Test Intake to select test cases for this run.</p>
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 500, overflowY: 'auto' }}>

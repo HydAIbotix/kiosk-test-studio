@@ -79,7 +79,7 @@ export default function Dashboard({ onNav }: { onNav: (p: string) => void }) {
             <button className="btn btn-sm btn-secondary" onClick={() => onNav('results')}>All Runs →</button>
           </div>
           {loading ? <p className="text-muted">Loading…</p> : recent.length === 0 ? (
-            <p className="text-muted">No runs yet. <button className="btn btn-sm btn-primary" style={{ marginLeft: 8 }} onClick={() => onNav('execution')}>Start a run →</button></p>
+            <p className="text-muted">No runs yet.</p>
           ) : (
             <div className="table-wrap">
               <table>

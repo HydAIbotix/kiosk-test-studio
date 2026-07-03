@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, runWs, type Run, type RunDetail } from '../api/client';
 import StatusBadge from '../components/StatusBadge';
+import StepShots from '../components/StepShots';
 
 type FeedLine = { ts: string; text: string; cls: string };
 
@@ -224,7 +225,7 @@ export default function LiveMonitor() {
           <div className="section-title">Stored Results ({run.results.length} test cases)</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
             {run.results.map(r => (
-              <StoredResult key={r.test_id} result={r} />
+              <StoredResult key={r.test_id} result={r} runId={run.run_id} />
             ))}
           </div>
         </div>
@@ -249,7 +250,7 @@ export default function LiveMonitor() {
 
 import type { TestResultDetail } from '../api/client';
 
-function StoredResult({ result }: { result: TestResultDetail }) {
+function StoredResult({ result, runId }: { result: TestResultDetail; runId: string }) {
   const [open, setOpen] = useState(false);
   const passed = result.outcome === 'passed';
   const steps  = result.step_results ?? [];
@@ -281,10 +282,16 @@ function StoredResult({ result }: { result: TestResultDetail }) {
               <div style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600, marginBottom: 6 }}>STEPS ({steps.length})</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                 {steps.map((s, i) => (
-                  <div key={i} className="row" style={{ fontSize: 12, gap: 8, alignItems: 'flex-start' }}>
-                    <span style={{ color: s.success ? 'var(--green)' : 'var(--red)', minWidth: 14, flexShrink: 0 }}>{s.success ? '✓' : '✗'}</span>
-                    <span style={{ color: 'var(--text)', flex: 1 }}>{s.step}</span>
-                    {s.note && <span style={{ fontSize: 11, color: 'var(--muted)', maxWidth: 240 }}>{s.note}</span>}
+                  <div key={i} style={{ fontSize: 12 }}>
+                    <div className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
+                      <span style={{ color: s.success ? 'var(--green)' : 'var(--red)', minWidth: 14, flexShrink: 0 }}>{s.success ? '✓' : '✗'}</span>
+                      <span style={{ color: 'var(--text)', flex: 1 }}>{s.step}</span>
+                      {s.note && <span style={{ fontSize: 11, color: 'var(--muted)', maxWidth: 240 }}>{s.note}</span>}
+                    </div>
+                    {s.observation && !s.success && (
+                      <div style={{ fontSize: 11, color: 'var(--red)', margin: '2px 0 0 22px' }}>{s.observation}</div>
+                    )}
+                    <div style={{ marginLeft: 22 }}><StepShots runId={runId} step={s} /></div>
                   </div>
                 ))}
               </div>

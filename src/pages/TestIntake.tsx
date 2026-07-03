@@ -4,11 +4,27 @@ import { api, type TestCase, type TcConfig, type TcPlan, type TcPlanStep } from 
 // ── Plan storage key ───────────────────────────────────────────────────────────
 const PLAN_KEY = (id: string) => `tc_plan_${id}`;
 
-function loadCachedPlan(id: string): TcPlan | null {
-  try { return JSON.parse(localStorage.getItem(PLAN_KEY(id)) || 'null'); } catch { return null; }
+// Signature of the test-case content that determines the plan.  Stored with each cached plan so a
+// cached plan is treated as STALE (and regenerated) when the test case is edited/re-imported —
+// even if only the expected result (e.g. a $ amount to verify) changed.
+export function planSig(tc: { steps_raw?: string; expected_results_raw?: string; description?: string }): string {
+  // Leading token bumped in lock-step with the backend _PLANNER_VERSION so cached plan
+  // previews regenerate when the planner output shape changes (e.g. value_element_id anchors).
+  return `v10¶${tc.steps_raw ?? ''}¶${tc.expected_results_raw ?? ''}¶${tc.description ?? ''}`;
 }
-function saveCachedPlan(id: string, plan: TcPlan) {
-  localStorage.setItem(PLAN_KEY(id), JSON.stringify(plan));
+
+function loadCachedPlan(id: string, tc?: { steps_raw?: string; expected_results_raw?: string; description?: string }): TcPlan | null {
+  try {
+    const p = JSON.parse(localStorage.getItem(PLAN_KEY(id)) || 'null');
+    if (!p) return null;
+    // If we know the current test case, drop the cache when its content no longer matches.
+    if (tc && p._src !== undefined && p._src !== planSig(tc)) return null;
+    return p;
+  } catch { return null; }
+}
+function saveCachedPlan(id: string, plan: TcPlan, tc?: { steps_raw?: string; expected_results_raw?: string; description?: string }) {
+  const withSig = tc ? { ...plan, _src: planSig(tc) } : plan;
+  localStorage.setItem(PLAN_KEY(id), JSON.stringify(withSig));
 }
 function deleteCachedPlan(id: string) {
   localStorage.removeItem(PLAN_KEY(id));
@@ -70,6 +86,7 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   const [uploading,  setUploading]= useState(false);
   const [uploadMsg,  setUploadMsg]= useState('');
   const [search,     setSearch]   = useState('');
+  const [selectedOnly, setSelectedOnly] = useState(false);
   const [tcConfigs,  setTcConfigs]= useState<Record<string, TcConfig>>({});
   const [cfgSaved,   setCfgSaved] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -82,7 +99,11 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   const [editedSteps,setEditedSt] = useState<TcPlanStep[]>([]);
   const [planSaved,  setPlanSaved]= useState(false);
 
-  const load = () => api.getTestCases().then(setCases);
+  const load = () => api.getTestCases().then(cs => {
+    setCases(cs);
+    // keep the selected test case in sync with the latest DB content (e.g. after re-import)
+    setSel(prev => prev ? (cs.find(c => c.test_id === prev.test_id) ?? prev) : prev);
+  });
   useEffect(() => { load(); }, []);
   useEffect(() => { api.saveSelectedTcs(Array.from(checked)); }, [checked]);
 
@@ -130,7 +151,7 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
     setPlan(null); setPlanSt('loading'); setPlanErr(''); setPlanEd(false);
 
     if (!force) {
-      const cached = loadCachedPlan(tc.test_id);
+      const cached = loadCachedPlan(tc.test_id, tc);
       if (cached) { setPlan(cached); setPlanSt('ready'); return; }
     }
 
@@ -141,7 +162,7 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
         expected_results_raw: tc.expected_results_raw,
         ...(force ? { force: true } : {}),
       });
-      saveCachedPlan(tc.test_id, p);
+      saveCachedPlan(tc.test_id, p, tc);
       setPlan(p); setPlanSt('ready');
     } catch (e) {
       setPlanSt('error');
@@ -178,9 +199,10 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   const removeStep = (i: number) => setEditedSt(prev => prev.filter((_, j) => j !== i));
 
   const filtered = cases.filter(c =>
-    search === '' ||
-    c.test_id.toLowerCase().includes(search.toLowerCase()) ||
-    c.summary.toLowerCase().includes(search.toLowerCase())
+    (!selectedOnly || checked.has(c.test_id)) &&
+    (search === '' ||
+     c.test_id.toLowerCase().includes(search.toLowerCase()) ||
+     c.summary.toLowerCase().includes(search.toLowerCase()))
   );
 
   const allChecked = filtered.length > 0 && filtered.every(c => checked.has(c.test_id));
@@ -210,6 +232,16 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
             <label className="form-label">Search</label>
             <input className="form-input" style={{ width: 210 }} value={search}
               onChange={e => setSearch(e.target.value)} placeholder="test ID or keyword…" />
+          </div>
+          <div>
+            <label className="form-label">&nbsp;</label>
+            <button className="btn btn-secondary btn-sm"
+              onClick={() => setSelectedOnly(v => !v)}
+              disabled={checked.size === 0 && !selectedOnly}
+              title="Show only test cases selected for the run"
+              style={{ borderColor: selectedOnly ? '#6366f1' : 'var(--border)', color: selectedOnly ? '#6366f1' : 'var(--text)' }}>
+              {selectedOnly ? `✓ Selected only (${checked.size})` : `Selected only (${checked.size})`}
+            </button>
           </div>
         </div>
       </div>

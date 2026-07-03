@@ -50,11 +50,16 @@ export const api = {
     return req<{imported:number;new:number}>('/test-cases/upload', { method: 'POST', body: form, headers: {} }, 30_000);
   },
   getConfig:     ()                    => req<Config>('/config'),
+  setRobotConn:  (body: {robot_backend: string; robot_ip?: string; robot_port?: number}) =>
+    req<{status:string; robot_backend:string; robot_ip:string; robot_port:number; robot_url:string; persisted:boolean; restart_required:boolean}>('/config/robot', {method:'PATCH', body:JSON.stringify(body)}),
   upsertKiosk:   (k: KioskConfig)      => req('/config/kiosk', {method:'PUT',body:JSON.stringify(k)}),
   getDevices:    ()                    => req<DeviceConfig[]>('/config/devices'),
   upsertDevice:  (d: DeviceConfig)     => req('/config/device', {method:'PUT',body:JSON.stringify(d)}),
   deleteDevice:  (alias: string)       => req(`/config/device/${encodeURIComponent(alias)}`, {method:'DELETE'}),
   getRobots:   ()                  => req<{mode:string;robots:Robot[]}>('/robots'),
+  getRobotHealth: (capture = true) => req<RobotHealth>(`/robot/health?capture=${capture}`, undefined, 40_000),
+  robotTestCall:  (payload: {method: string; path: string; body?: unknown; timeout?: number}) =>
+    req<RobotTestResult>('/robot/test-call', {method: 'POST', body: JSON.stringify(payload)}, 45_000),
   getAppMap:   ()                  => req<AppMap>('/app-map'),
   clearAppMap: ()                  => req('/app-map', {method:'DELETE'}),
   resetAll:    (signal?: AbortSignal) => req<{status:string;message:string}>('/reset', {method:'POST', _signal: signal}, 30_000),
@@ -62,9 +67,13 @@ export const api = {
   getExploreStatus:(id: string)      => req<{explore_id:string;status:string;message:string}>(`/explore/${id}`),
   getScreenshots:         ()                  => req<string[]>('/screenshots'),
   getAnnotatedScreenshots:()                  => req<Record<string,string[]>>('/screenshots/annotated'),
-  getTcPlan:      (body: TcPlanInput)         => req<TcPlan>('/tc-plan', {method:'POST', body:JSON.stringify(body)}),
+  getTcPlan:      (body: TcPlanInput)         => req<TcPlan>('/tc-plan', {method:'POST', body:JSON.stringify(body)}, 90_000),
   deleteTcPlan:   (test_id: string)           => req(`/tc-plan/${test_id}`, {method:'DELETE'}),
   getRunDefects:  (run_id: string)            => req<Defect[]>(`/runs/${run_id}/defects`),
+  getExploreConfig: ()                       => req<ExploreConfig>('/explore-config'),
+  setExploreMode: (mode: string)             => req<{mode:string;status:string}>('/explore-config', {method:'PATCH',body:JSON.stringify({mode})}),
+  submitVerdict: (run_id: string, test_id: string, verdict: 'passed'|'failed') =>
+    req<{status:string;test_id:string;outcome:string}>(`/runs/${run_id}/verdict`, {method:'PATCH',body:JSON.stringify({test_id,verdict})}),
   getTcConfig: (test_id: string)   => JSON.parse(localStorage.getItem(`tc_config_${test_id}`) || 'null') as TcConfig | null,
   saveTcConfig:(test_id: string, cfg: TcConfig) => { localStorage.setItem(`tc_config_${test_id}`, JSON.stringify(cfg)); },
   getSelectedTcs: ()               => JSON.parse(localStorage.getItem('selected_tcs') || '[]') as string[],
@@ -84,7 +93,16 @@ export type Run = {
 export type StepResult = {
   step: string; success: boolean; method?: string;
   note?: string; expected_screen?: string; actual_screen?: string;
+  expected_text?: string; observation?: string;
+  screenshot_after?: string;
 };
+
+/** Build an <img> URL for a per-run step screenshot from the path stored in the
+ *  step result (which may be an absolute server path with / or \ separators). */
+export function runScreenshotUrl(runId: string, pathOrName: string): string {
+  const name = (pathOrName || '').split(/[/\\]/).pop() || '';
+  return `${BASE}/runs/${encodeURIComponent(runId)}/screenshots/${encodeURIComponent(name)}`;
+}
 
 export type TestResultDetail = {
   test_id: string; summary: string; outcome: string;
@@ -111,7 +129,8 @@ export type DeviceConfig = {
 };
 
 export type Config = {
-  robot_backend: string; robot_ip: string; robot_id: string;
+  robot_backend: string; robot_ip: string; robot_port: number; robot_id: string;
+  exploration_mode: string;
   viewport: {width:number;height:number}; camera: {width:number;height:number};
   kiosks: KioskConfig[];
   devices: DeviceConfig[];
@@ -126,6 +145,30 @@ export type KioskConfig = {
 export type Robot = {
   robot_id: string; connected: boolean; current_kiosk_id: string;
   arm_state: string; base_pose: Record<string,number>; event_count: number;
+};
+
+export type RobotComponent = {
+  status: 'ok' | 'error' | 'unknown' | string;
+  detail: string;
+  [k: string]: unknown;
+};
+
+export type RobotHealth = {
+  backend: string;
+  robot_url: string;
+  robot_id: string;
+  kiosk_id?: string;
+  simulated?: boolean;
+  healthy: boolean;
+  error?: string;
+  components: Record<'robot' | 'base' | 'camera', RobotComponent>;
+  checked_at?: number;
+};
+
+export type RobotTestResult = {
+  ok: boolean; url: string; method: string;
+  status_code?: number; elapsed_ms: number;
+  response_body?: unknown; error?: string;
 };
 
 export type AppMapScreen = {
@@ -157,6 +200,14 @@ export type TcPlan = {
 export type TcPlanInput = {
   test_id: string; summary: string; description?: string;
   steps_raw: string; expected_results_raw?: string; force?: boolean;
+};
+
+export type ExploreConfig = {
+  mode: string;           // "claude" | "playwright_aria"
+  effective_mode: string; // may differ from mode when backend=real
+  robot_backend: string;
+  locked: boolean;        // true when backend=real (ARIA disabled)
+  lock_reason: string | null;
 };
 
 export type Defect = {

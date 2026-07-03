@@ -4,7 +4,7 @@ import { api } from '../api/client';
 
 type Page =
   | 'dashboard' | 'explorer' | 'app-map' | 'test-intake'
-  | 'configuration' | 'execution' | 'monitor' | 'results';
+  | 'configuration' | 'robot-setup' | 'execution' | 'monitor' | 'results';
 
 const NAV: { group: string; items: { id: Page; icon: string; label: string }[] }[] = [
   {
@@ -29,7 +29,10 @@ const NAV: { group: string; items: { id: Page; icon: string; label: string }[] }
   },
   {
     group: 'Settings',
-    items: [{ id: 'configuration', icon: '⚙', label: 'Configuration' }],
+    items: [
+      { id: 'configuration', icon: '⚙',  label: 'Configuration' },
+      { id: 'robot-setup',   icon: '🤖', label: 'Robot Setup' },
+    ],
   },
 ];
 
@@ -56,12 +59,11 @@ function ResetButton() {
     try {
       await api.resetAll(ctrl.signal);
       if (ctrl.signal.aborted) return;   // user cancelled — do nothing
-      // Clear localStorage except global credentials
-      const keep = localStorage.getItem('global_test_creds');
+      // Clear only cached test plans (regenerated on demand) to match the backend.
+      // Test-case config, selections, and credentials are preserved.
       Object.keys(localStorage).forEach(k => {
-        if (k !== 'global_test_creds') localStorage.removeItem(k);
+        if (k.startsWith('tc_plan_')) localStorage.removeItem(k);
       });
-      if (keep) localStorage.setItem('global_test_creds', keep);
       setDone(true);
       setTimeout(() => window.location.reload(), 1200);
     } catch (e) {
@@ -83,8 +85,7 @@ function ResetButton() {
     <div style={{ padding: '12px 14px', borderTop: '1px solid var(--border)' }}>
       {!busy && (
         <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10, lineHeight: 1.5 }}>
-          Deletes all runs, results, test cases and the app map.
-          Kiosk config and global credentials are kept.
+          Deletes all generated test plans, test runs and results. Does not impact App map, raw test cases and global config.
         </p>
       )}
       {busy && (

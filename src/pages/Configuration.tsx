@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Config, type KioskConfig, type DeviceConfig } from '../api/client';
+import { api, type Config, type KioskConfig, type DeviceConfig, type ExploreConfig } from '../api/client';
 
 const BLANK_KIOSK: KioskConfig = {
   kiosk_id: '', name: '', url: 'http://localhost:5173', robot_id: 'R-01',
@@ -15,19 +15,47 @@ function deviceColor(alias: string, allAliases: string[]) {
   return DEVICE_COLORS[idx % DEVICE_COLORS.length] ?? 'var(--muted)';
 }
 
-export default function Configuration() {
-  const [config,   setConfig]  = useState<Config | null>(null);
-  const [kiosk,    setKiosk]   = useState<KioskConfig>(BLANK_KIOSK);
-  const [device,   setDevice]  = useState<DeviceConfig>(BLANK_DEVICE);
-  const [saving,   setSaving]  = useState(false);
-  const [saveMsg,  setSaveMsg] = useState('');
-  const [devSaving,setDevSav]  = useState(false);
-  const [devMsg,   setDevMsg]  = useState('');
-  const [loading,  setLoading] = useState(true);
+export default function Configuration({ onNav }: { onNav?: (p: string) => void }) {
+  const [config,       setConfig]     = useState<Config | null>(null);
+  const [kiosk,        setKiosk]      = useState<KioskConfig>(BLANK_KIOSK);
+  const [device,       setDevice]     = useState<DeviceConfig>(BLANK_DEVICE);
+  const [saving,       setSaving]     = useState(false);
+  const [saveMsg,      setSaveMsg]    = useState('');
+  const [devSaving,    setDevSav]     = useState(false);
+  const [devMsg,       setDevMsg]     = useState('');
+  const [loading,      setLoading]    = useState(true);
+  const [exploreConf,  setExploreCon] = useState<ExploreConfig | null>(null);
+  const [exploreMode,  setExplMode]   = useState<string>('claude');
+  const [exploreSaving,setExpSaving]  = useState(false);
+  const [exploreMsg,   setExploreMsg] = useState('');
+  const [robotForm,    setRobotForm]  = useState({ robot_backend: 'demo', robot_ip: '', robot_port: 8000 });
+  const [robotSaving,  setRobotSaving]= useState(false);
+  const [robotMsg,     setRobotMsg]   = useState('');
+  const [robotRestart, setRobotRestart]= useState(false);
 
-  const reload = () => api.getConfig().then(c => { setConfig(c); if (c.kiosks.length > 0) setKiosk(c.kiosks[0]); });
+  const reload = () => api.getConfig().then(c => {
+    setConfig(c);
+    setRobotForm({ robot_backend: c.robot_backend, robot_ip: c.robot_ip, robot_port: c.robot_port });
+    if (c.kiosks.length > 0) setKiosk(c.kiosks[0]);
+  });
+  const reloadExploreConf = () => api.getExploreConfig().then(c => { setExploreCon(c); setExplMode(c.mode); });
 
-  useEffect(() => { reload().finally(() => setLoading(false)); }, []);
+  useEffect(() => {
+    Promise.all([reload(), reloadExploreConf()]).finally(() => setLoading(false));
+  }, []);
+
+  const saveRobot = async () => {
+    setRobotSaving(true); setRobotMsg(''); setRobotRestart(false);
+    try {
+      const r = await api.setRobotConn({
+        robot_backend: robotForm.robot_backend,
+        robot_ip:      robotForm.robot_ip,
+        robot_port:    robotForm.robot_port,
+      });
+      setRobotMsg('✓ Saved'); setRobotRestart(r.restart_required); reload();
+    } catch (e) { setRobotMsg(`Error: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setRobotSaving(false); }
+  };
 
   const saveKiosk = async () => {
     setSaving(true); setSaveMsg('');
@@ -50,25 +78,220 @@ export default function Configuration() {
     reload();
   };
 
+  const saveExploreMode = async () => {
+    setExpSaving(true); setExploreMsg('');
+    try {
+      await api.setExploreMode(exploreMode);
+      setExploreMsg('✓ Saved — takes effect on next exploration run');
+      reloadExploreConf();
+    } catch (e) {
+      setExploreMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExpSaving(false);
+    }
+  };
+
   if (loading) return <p className="text-muted">Loading configuration…</p>;
 
   const allAliases = (config?.devices ?? []).map(d => d.alias);
 
   return (
     <div>
-      {/* System info (read-only) */}
-      <div className="card section">
-        <div className="section-title">System Configuration (from .env)</div>
-        <div className="grid-4" style={{ marginTop: 8 }}>
-          <InfoTile label="Robot Backend" value={config?.robot_backend ?? '—'} />
-          <InfoTile label="Robot IP"      value={config?.robot_ip ?? '—'} />
-          <InfoTile label="Robot ID"      value={config?.robot_id ?? '—'} />
-          <InfoTile label="Viewport"      value={`${config?.viewport.width}×${config?.viewport.height}`} />
+      {/* Robot Setup sub-page link — required before real-robot test runs */}
+      {config?.robot_backend === 'real' && (
+        <div className="card section" style={{ display: 'flex', alignItems: 'center', gap: 12, borderColor: 'var(--yellow)' }}>
+          <span style={{ fontSize: 20 }}>🤖</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, color: 'var(--text)' }}>Robot testing</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+              Verify Robot, Kiosk and Camera are ready before running real-robot tests.
+            </div>
+          </div>
+          <button onClick={() => onNav?.('robot-setup')}
+            style={{ padding: '8px 14px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+            Open Robot Setup →
+          </button>
         </div>
-        <p className="text-muted" style={{ fontSize: 12, marginTop: 10 }}>
-          To change robot_backend, robot_ip, etc. edit .env and restart the server.
+      )}
+
+      {/* Robot connection (editable) */}
+      <div className="card section">
+        <div className="section-title">Robot Connection</div>
+
+        <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', margin: '10px 0 6px' }}>Robot Backend</label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {(['demo', 'playwright', 'real'] as const).map(b => {
+            const sel = robotForm.robot_backend === b;
+            return (
+              <button key={b} onClick={() => setRobotForm(f => ({ ...f, robot_backend: b }))}
+                style={{
+                  padding: '8px 16px', borderRadius: 7, fontSize: 13, cursor: 'pointer', textTransform: 'capitalize',
+                  border: `1px solid ${sel ? '#6366f1' : 'var(--border)'}`,
+                  background: sel ? 'color-mix(in srgb, #6366f1 16%, transparent)' : 'var(--surface)',
+                  color: sel ? 'var(--text)' : 'var(--muted)', fontWeight: sel ? 600 : 400,
+                }}>
+                {b}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, maxWidth: 460, marginTop: 14 }}>
+          <div>
+            <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Robot IP</label>
+            <input value={robotForm.robot_ip} disabled={robotForm.robot_backend !== 'real'} placeholder="192.168.1.100"
+              onChange={e => setRobotForm(f => ({ ...f, robot_ip: e.target.value }))}
+              style={{
+                width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13,
+                background: robotForm.robot_backend === 'real' ? 'var(--bg)' : 'var(--surface)',
+                color: robotForm.robot_backend === 'real' ? 'var(--text)' : 'var(--muted)',
+                cursor: robotForm.robot_backend === 'real' ? 'text' : 'not-allowed',
+                opacity: robotForm.robot_backend === 'real' ? 1 : 0.55,
+              }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Robot Port</label>
+            <input type="number" value={robotForm.robot_port} disabled={robotForm.robot_backend !== 'real'} placeholder="8000"
+              onChange={e => setRobotForm(f => ({ ...f, robot_port: Number(e.target.value) }))}
+              style={{
+                width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13,
+                background: robotForm.robot_backend === 'real' ? 'var(--bg)' : 'var(--surface)',
+                color: robotForm.robot_backend === 'real' ? 'var(--text)' : 'var(--muted)',
+                cursor: robotForm.robot_backend === 'real' ? 'text' : 'not-allowed',
+                opacity: robotForm.robot_backend === 'real' ? 1 : 0.55,
+              }} />
+          </div>
+        </div>
+
+        <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
+          {robotForm.robot_backend === 'real'
+            ? <>Robot URL: <code>http://{robotForm.robot_ip || '…'}:{robotForm.robot_port}/api/v1</code> — verify health in <strong>Robot Setup</strong>.</>
+            : <>IP / port apply only to the <code>real</code> backend. <code>{robotForm.robot_backend}</code> runs in-browser (Playwright) or scripted (demo).</>}
         </p>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+          <button onClick={saveRobot} disabled={robotSaving}
+            style={{ padding: '8px 16px', borderRadius: 7, border: '1px solid #6366f1', background: '#6366f1', color: '#fff', cursor: robotSaving ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600 }}>
+            {robotSaving ? 'Saving…' : 'Save robot connection'}
+          </button>
+          {robotMsg && <span style={{ fontSize: 12, color: robotMsg.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>{robotMsg}</span>}
+        </div>
+        {robotRestart && (
+          <p style={{ fontSize: 12, color: 'var(--yellow)', marginTop: 8 }}>
+            ⚠ Backend changed — restart the API server for it to take effect for test runs (IP / port apply immediately).
+          </p>
+        )}
+
+        <div className="grid-4" style={{ marginTop: 18 }}>
+          <InfoTile label="Robot ID"  value={config?.robot_id ?? '—'} />
+          <InfoTile label="Viewport"  value={`${config?.viewport.width}×${config?.viewport.height}`} />
+          <InfoTile label="Camera"    value={`${config?.camera.width}×${config?.camera.height}`} />
+          <InfoTile label="Explore"   value={config?.exploration_mode ?? '—'} />
+        </div>
       </div>
+
+      {/* ── App Exploration Mode ───────────────────────────────────────────── */}
+      {exploreConf && (
+        <div className="card section">
+          <div className="section-title">App Exploration Mode</div>
+          <p className="text-muted" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.6 }}>
+            Controls how the <strong>App Explorer</strong> discovers UI elements when mapping a new kiosk.
+            This setting applies to the next exploration run — it does not affect tests already in progress.
+          </p>
+
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+            {/* ── Claude Vision ── */}
+            <label
+              style={{
+                flex: 1, minWidth: 220,
+                border: `2px solid ${exploreMode === 'claude' ? 'var(--accent)' : 'var(--border)'}`,
+                borderRadius: 10, padding: '14px 16px', cursor: 'pointer',
+                background: exploreMode === 'claude' ? 'rgba(99,102,241,0.06)' : 'var(--surface)',
+                transition: 'all 0.15s',
+              }}
+            >
+              <input
+                type="radio" name="explore_mode" value="claude"
+                checked={exploreMode === 'claude'}
+                onChange={() => setExplMode('claude')}
+                style={{ marginRight: 8 }}
+              />
+              <strong>Claude Vision</strong>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
+                Takes a screenshot and sends it to Claude to identify elements and their coordinates.
+                Works with <strong>all backends</strong> (demo, playwright, real robot).
+                <br />
+                <span style={{ color: 'var(--green)', fontWeight: 500 }}>✓ Default</span>
+              </div>
+            </label>
+
+            {/* ── Playwright ARIA ── */}
+            <label
+              style={{
+                flex: 1, minWidth: 220,
+                border: `2px solid ${exploreMode === 'playwright_aria' ? 'var(--accent)' : 'var(--border)'}`,
+                borderRadius: 10, padding: '14px 16px',
+                cursor: exploreConf.locked ? 'not-allowed' : 'pointer',
+                background: exploreConf.locked
+                  ? 'var(--bg)'
+                  : exploreMode === 'playwright_aria'
+                    ? 'rgba(99,102,241,0.06)'
+                    : 'var(--surface)',
+                opacity: exploreConf.locked ? 0.55 : 1,
+                transition: 'all 0.15s',
+              }}
+            >
+              <input
+                type="radio" name="explore_mode" value="playwright_aria"
+                checked={exploreMode === 'playwright_aria'}
+                disabled={exploreConf.locked}
+                onChange={() => !exploreConf.locked && setExplMode('playwright_aria')}
+                style={{ marginRight: 8 }}
+              />
+              <strong>Playwright ARIA</strong>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
+                Reads the browser's accessibility tree directly — zero LLM image calls during exploration.
+                Faster and more accurate coordinates. Requires <code>playwright</code> backend.
+                {exploreConf.locked && (
+                  <div style={{ marginTop: 6, color: 'var(--yellow)', fontWeight: 500 }}>
+                    ⚠ Not available — current backend is <code>real</code> (no browser access).
+                  </div>
+                )}
+              </div>
+            </label>
+          </div>
+
+          {/* Effective mode badge */}
+          {exploreConf.effective_mode !== exploreConf.mode && (
+            <div className="card card-sm" style={{ borderColor: 'rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.05)', marginBottom: 10 }}>
+              <p style={{ fontSize: 12, color: 'var(--yellow)' }}>
+                ⚠ <strong>Mode overridden</strong> — configured as <code>{exploreConf.mode}</code> but
+                running as <code>{exploreConf.effective_mode}</code> because the robot backend is <code>real</code>.
+              </p>
+            </div>
+          )}
+
+          <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={saveExploreMode}
+              disabled={exploreSaving || exploreMode === exploreConf.mode}
+            >
+              {exploreSaving ? '⏳ Saving…' : '💾 Save Mode'}
+            </button>
+            {exploreMsg && (
+              <span style={{ fontSize: 12, color: exploreMsg.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>
+                {exploreMsg}
+              </span>
+            )}
+            {exploreMode === exploreConf.mode && !exploreMsg && (
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                Current: <strong>{exploreConf.effective_mode}</strong>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Device Map ─────────────────────────────────────────────────────── */}
       <div className="card section">
