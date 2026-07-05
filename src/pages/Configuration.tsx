@@ -6,7 +6,7 @@ const BLANK_KIOSK: KioskConfig = {
   screen_w_m: 0.4, screen_h_m: 0.3, tag_id: 1,
 };
 
-const BLANK_DEVICE: DeviceConfig = { alias: '', description: '', pos_x: 0, pos_y: 0, pos_theta: 0 };
+const BLANK_DEVICE: DeviceConfig = { alias: '', kiosk_id: '', description: '', pos_x: 0, pos_y: 0, pos_theta: 0 };
 
 // Stable palette for device aliases (cycles if >8 devices)
 const DEVICE_COLORS = ['#6366f1','#f59e0b','#22c55e','#3b82f6','#ec4899','#a855f7','#14b8a6','#f97316'];
@@ -32,12 +32,29 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
   const [robotSaving,  setRobotSaving]= useState(false);
   const [robotMsg,     setRobotMsg]   = useState('');
   const [robotRestart, setRobotRestart]= useState(false);
+  const [cardSvc,      setCardSvc]    = useState('');
+  const [cardSvcSaving,setCardSvcSav] = useState(false);
+  const [cardSvcMsg,   setCardSvcMsg] = useState('');
 
   const reload = () => api.getConfig().then(c => {
     setConfig(c);
     setRobotForm({ robot_backend: c.robot_backend, robot_ip: c.robot_ip, robot_port: c.robot_port });
+    setCardSvc(c.card_service_url || '');
     if (c.kiosks.length > 0) setKiosk(c.kiosks[0]);
   });
+
+  const saveCardService = async () => {
+    setCardSvcSav(true); setCardSvcMsg('');
+    try {
+      await api.setCardService(cardSvc.trim());
+      setCardSvcMsg(cardSvc.trim() ? '✓ Saved — shared across kiosks' : '✓ Cleared — kiosks use local storage');
+      reload();
+    } catch (e) {
+      setCardSvcMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setCardSvcSav(false);
+    }
+  };
   const reloadExploreConf = () => api.getExploreConfig().then(c => { setExploreCon(c); setExplMode(c.mode); });
 
   useEffect(() => {
@@ -298,10 +315,11 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
         <div className="section-title">Device Map</div>
         <p className="text-muted" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.6 }}>
           One-time setup. Add every physical device the robot must visit during tests — use the
-          abbreviations your team already writes in test steps (<strong>TVM</strong>,&nbsp;
-          <strong>MPOS</strong>, <strong>RSV</strong>, <strong>BMV</strong>, etc.).
-          Claude reads this map when generating plans and tags each step with the target device.
-          The robot moves to the device's position before interacting with its touchscreen.
+          abbreviations your team writes in test steps (<strong>TVM</strong>,&nbsp;
+          <strong>MPOS</strong>, etc.) and map each to its <strong>Kiosk-ID</strong> (which links the
+          app map explored for that device) and its position. Claude reads this map when generating
+          plans, tags each step with the target device, and the robot moves to that device's position
+          before interacting with its touchscreen.
         </p>
 
         {/* Existing device table */}
@@ -310,7 +328,7 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
             <table>
               <thead>
                 <tr>
-                  <th>Alias</th><th>Description</th><th>X (m)</th><th>Y (m)</th><th>θ (°)</th><th></th>
+                  <th>Alias</th><th>Kiosk-ID</th><th>Description</th><th>X (m)</th><th>Y (m)</th><th>θ (°)</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -320,6 +338,7 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
                       <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: deviceColor(d.alias, allAliases), marginRight: 7 }} />
                       <strong style={{ fontFamily: 'monospace', fontSize: 12, color: deviceColor(d.alias, allAliases) }}>{d.alias}</strong>
                     </td>
+                    <td className="monospace" style={{ fontSize: 12, color: d.kiosk_id ? 'var(--accent2)' : 'var(--muted)' }}>{d.kiosk_id || '—'}</td>
                     <td style={{ fontSize: 12 }}>{d.description}</td>
                     <td className="monospace" style={{ fontSize: 12 }}>{d.pos_x.toFixed(2)}</td>
                     <td className="monospace" style={{ fontSize: 12 }}>{d.pos_y.toFixed(2)}</td>
@@ -340,12 +359,18 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
           <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: 'var(--text)' }}>
             {device.alias && allAliases.includes(device.alias) ? `Edit — ${device.alias}` : 'Add Device'}
           </div>
-          <div className="grid-2" style={{ gap: 10, marginBottom: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.4fr', gap: 10, marginBottom: 10 }}>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Alias <span style={{ color: 'var(--red)' }}>*</span></label>
               <input className="form-input" value={device.alias}
                 onChange={e => setDevice(d => ({ ...d, alias: e.target.value.toUpperCase() }))}
                 placeholder="TVM" style={{ fontFamily: 'monospace', textTransform: 'uppercase' }} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Kiosk-ID</label>
+              <input className="form-input" value={device.kiosk_id}
+                onChange={e => setDevice(d => ({ ...d, kiosk_id: e.target.value }))}
+                placeholder="KIOSK-ID-1" style={{ fontFamily: 'monospace' }} />
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Full Name / Description</label>
@@ -457,10 +482,34 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
           <hr className="divider" />
           <div className="section-title">Smart Card Config</div>
           <p className="text-muted" style={{ fontSize: 12, marginBottom: 10 }}>
-            The robot taps a card on the NFC reader. Card numbers and balances are tracked in the kiosk shared localStorage ledger.
+            The robot taps a card on the NFC reader. Kiosk-1 issues cards; Kiosk-2 spends them.
           </p>
           <CredRow label="Card station" value="KIOSK-ID-1" />
           <CredRow label="POS kiosk"    value="KIOSK-ID-2" />
+
+          <label style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 14, marginBottom: 4 }}>
+            Shared Card Service URL <span style={{ fontStyle: 'italic' }}>(optional)</span>
+          </label>
+          <div className="row" style={{ gap: 8 }}>
+            <input
+              value={cardSvc}
+              onChange={e => setCardSvc(e.target.value)}
+              placeholder="http://<host-ip>:4000  (blank = per-machine localStorage)"
+              style={{ flex: 1, fontSize: 12.5, padding: '7px 9px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+            />
+            <button className="btn btn-sm btn-secondary" onClick={saveCardService} disabled={cardSvcSaving}>
+              {cardSvcSaving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+          <p className="text-muted" style={{ fontSize: 11.5, marginTop: 6, lineHeight: 1.5 }}>
+            When set, the studio appends <code>?cardServiceUrl=…</code> to the kiosk URLs so Kiosk-1 and Kiosk-2 share
+            balances and transactions <strong>across machines</strong> (run the service in <code>robotics-kiosk-pos/card-service</code>).
+            Leave blank to use each browser's local storage (single-machine default).
+          </p>
+          {cardSvcMsg && (
+            <p style={{ fontSize: 12, marginTop: 4, color: cardSvcMsg.startsWith('Error') ? 'var(--red)' : 'var(--green)' }}>{cardSvcMsg}</p>
+          )}
+
           <p className="text-muted" style={{ fontSize: 12, marginTop: 10 }}>
             ⚠ If a card number or balance is missing before an E2E test, the runner will warn before starting.
           </p>

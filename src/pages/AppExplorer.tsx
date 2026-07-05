@@ -28,7 +28,7 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
     setMessage('Explorer launched — Playwright is navigating the kiosk. This takes 2–5 minutes.');
     setConfirm(false);
     try {
-      const res = await api.startExplore(kioskUrl);
+      const res = await api.startExplore(kioskUrl, kioskId);
       exploreIdRef.current = res.explore_id;
 
       // Poll every 4 s until the backend reports done or error
@@ -113,24 +113,27 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
         <div className="card section">
           <div className="section-title">{existing ? 'Re-explore Settings' : 'Explorer Settings'}</div>
           {existing && (
-            <div className="card card-sm" style={{ borderColor: 'var(--yellow)', marginBottom: 14, background: 'rgba(245,158,11,0.06)' }}>
-              <p style={{ fontSize: 12, color: 'var(--yellow)' }}>
-                ⚠ A map already exists. Running will overwrite it. Use "Clear &amp; Re-explore" above to start clean.
+            <div className="card card-sm" style={{ borderColor: 'rgba(99,102,241,0.4)', marginBottom: 14, background: 'rgba(99,102,241,0.06)' }}>
+              <p style={{ fontSize: 12, color: 'var(--accent2)' }}>
+                Exploring is <strong>per Kiosk ID</strong>: this run maps the app at the URL below and merges it under
+                the Kiosk ID you enter, <strong>without wiping other kiosks' maps</strong>. Re-running the same Kiosk ID
+                refreshes just that app.
               </p>
             </div>
           )}
           <div className="form-group">
-            <label className="form-label">Kiosk URL</label>
-            <input className="form-input" value={kioskUrl} onChange={e => setKioskUrl(e.target.value)} placeholder="http://localhost:5173" />
+            <label className="form-label">Kiosk URL <span className="text-muted">(the app to explore)</span></label>
+            <input className="form-input" value={kioskUrl} onChange={e => setKioskUrl(e.target.value)} placeholder="http://localhost:5173/?kiosk=card-station" />
             <p className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
-              Must be reachable from this machine. For a physical device, use its IP address.
+              The specific app/screen to map — e.g. <code>…/?kiosk=card-station</code> for Kiosk-1, <code>…/?kiosk=pos</code> for Kiosk-2.
             </p>
           </div>
           <div className="form-group">
-            <label className="form-label">Kiosk ID</label>
-            <input className="form-input" value={kioskId} onChange={e => setKioskId(e.target.value)} placeholder="K-01" />
+            <label className="form-label">Kiosk ID <span className="text-muted">(which device this app belongs to)</span></label>
+            <input className="form-input" value={kioskId} onChange={e => setKioskId(e.target.value)} placeholder="KIOSK-ID-1" />
             <p className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
-              Must match the ID used in your test cases (K-01, K-02, etc.).
+              Tags this app's screens. Must match the Kiosk ID mapped to your test-case device abbreviations in
+              <strong> Configuration → Device Map</strong>.
             </p>
           </div>
           <button className="btn btn-primary" onClick={start} disabled={status === 'running' || !kioskUrl}>

@@ -214,6 +214,17 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
 
   return (
     <div>
+      {/* Multi-device guidance */}
+      <div className="card section" style={{ borderColor: 'rgba(99,102,241,0.35)', background: 'rgba(99,102,241,0.06)' }}>
+        <div style={{ fontSize: 12.5, lineHeight: 1.6, color: 'var(--text)' }}>
+          <strong>Multi-device tests:</strong> write each step with the <strong>device abbreviation</strong> it targets
+          (e.g. <code>CARD</code>, <code>SHOP</code>) — the same abbreviations you map to Kiosk-IDs in{' '}
+          <strong>Configuration&nbsp;→&nbsp;Device&nbsp;Map</strong>. The planner tags each step with its device and the
+          robot moves to that device's position (steps without a device stay on the current one). This lets one test
+          load a card at one kiosk, buy at another, and return to check the updated balance.
+        </div>
+      </div>
+
       {/* Controls */}
       <div className="card section">
         <div className="row" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>

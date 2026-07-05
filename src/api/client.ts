@@ -63,7 +63,7 @@ export const api = {
   getAppMap:   ()                  => req<AppMap>('/app-map'),
   clearAppMap: ()                  => req('/app-map', {method:'DELETE'}),
   resetAll:    (signal?: AbortSignal) => req<{status:string;message:string}>('/reset', {method:'POST', _signal: signal}, 30_000),
-  startExplore:    (kiosk_url:string) => req<{explore_id:string;status:string}>('/explore', {method:'POST',body:JSON.stringify({kiosk_url})}),
+  startExplore:    (kiosk_url:string, kiosk_id?:string) => req<{explore_id:string;status:string}>('/explore', {method:'POST',body:JSON.stringify({kiosk_url, ...(kiosk_id ? {kiosk_id} : {})})}),
   getExploreStatus:(id: string)      => req<{explore_id:string;status:string;message:string}>(`/explore/${id}`),
   getScreenshots:         ()                  => req<string[]>('/screenshots'),
   getAnnotatedScreenshots:()                  => req<Record<string,string[]>>('/screenshots/annotated'),
@@ -72,6 +72,7 @@ export const api = {
   getRunDefects:  (run_id: string)            => req<Defect[]>(`/runs/${run_id}/defects`),
   getExploreConfig: ()                       => req<ExploreConfig>('/explore-config'),
   setExploreMode: (mode: string)             => req<{mode:string;status:string}>('/explore-config', {method:'PATCH',body:JSON.stringify({mode})}),
+  setCardService: (card_service_url: string) => req<{status:string;card_service_url:string}>('/config/card-service', {method:'PATCH',body:JSON.stringify({card_service_url})}),
   submitVerdict: (run_id: string, test_id: string, verdict: 'passed'|'failed') =>
     req<{status:string;test_id:string;outcome:string}>(`/runs/${run_id}/verdict`, {method:'PATCH',body:JSON.stringify({test_id,verdict})}),
   getTcConfig: (test_id: string)   => JSON.parse(localStorage.getItem(`tc_config_${test_id}`) || 'null') as TcConfig | null,
@@ -124,6 +125,7 @@ export type TestCase = {
 
 export type DeviceConfig = {
   alias: string;        // e.g. "TVM"
+  kiosk_id: string;     // linked Kiosk-ID (e.g. "KIOSK-ID-1")
   description: string;  // e.g. "Ticket Vending Machine"
   pos_x: number; pos_y: number; pos_theta: number;
 };
@@ -131,6 +133,7 @@ export type DeviceConfig = {
 export type Config = {
   robot_backend: string; robot_ip: string; robot_port: number; robot_id: string;
   exploration_mode: string;
+  card_service_url: string;
   viewport: {width:number;height:number}; camera: {width:number;height:number};
   kiosks: KioskConfig[];
   devices: DeviceConfig[];
@@ -172,12 +175,17 @@ export type RobotTestResult = {
 };
 
 export type AppMapScreen = {
-  description: string; dom_id: string; element_count: number;
+  description: string; dom_id: string; element_count: number; app_id?: string;
   elements: {id:string;label:string;type:string;center:[number,number]}[];
+};
+
+export type AppMapAppInfo = {
+  app_id: string; label: string; entry_screen: string; screen_count: number; explored_at: string;
 };
 
 export type AppMap = {
   exists: boolean; explored_at: string|null; entry_screen: string;
+  apps?: Record<string, AppMapAppInfo>;
   screens: Record<string, AppMapScreen>;
 };
 

@@ -7,6 +7,7 @@ const ANNOTATED_BASE  = '/api/screenshots/annotated';
 export default function AppMapPage() {
   const [map,          setMap]         = useState<AppMap | null>(null);
   const [selected,     setSel]         = useState<string | null>(null);
+  const [appFilter,    setAppFilter]   = useState<string>('all');
   const [loading,      setLoading]     = useState(true);
   const [shots,        setShots]       = useState<string[]>([]);
   const [annotated,    setAnnotated]   = useState<Record<string, string[]>>({});
@@ -28,7 +29,10 @@ export default function AppMapPage() {
     </div>
   );
 
-  const screens  = Object.entries(map.screens);
+  const apps     = map.apps ? Object.values(map.apps) : [];
+  const screens  = Object.entries(map.screens).filter(
+    ([, sc]) => appFilter === 'all' || (sc.app_id || '') === appFilter
+  );
   const sel_sc   = selected ? map.screens[selected] : null;
   const totalEl  = screens.reduce((s, [, sc]) => s + sc.element_count, 0);
 
@@ -37,6 +41,27 @@ export default function AppMapPage() {
 
   return (
     <div>
+      {/* App selector — filter the map by explored application (multi-app) */}
+      {apps.length > 0 && (
+        <div className="card section" style={{ padding: '10px 14px' }}>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span className="section-title" style={{ marginBottom: 0, marginRight: 4 }}>App</span>
+            <button className={`btn btn-sm ${appFilter === 'all' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => { setAppFilter('all'); setSel(null); }}>
+              All ({Object.keys(map.screens).length})
+            </button>
+            {apps.map(a => (
+              <button key={a.app_id}
+                className={`btn btn-sm ${appFilter === a.app_id ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => { setAppFilter(a.app_id); setSel(null); }}
+                title={`entry: ${a.entry_screen}`}>
+                {a.label || a.app_id} ({a.screen_count})
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Stats */}
       <div className="grid-4 section">
         <Stat label="Screens"        value={screens.length} />
