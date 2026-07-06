@@ -150,8 +150,10 @@ export default function RobotSetup() {
       {/* connection info incl. Robot URL */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 28px', fontSize: 13 }}>
-          <div><span style={{ color: 'var(--muted)' }}>Robot URL: </span>
-            <code style={{ color: 'var(--text)' }}>{health?.robot_url ?? '—'}</code></div>
+          <div><span style={{ color: '#0ea5e9', fontWeight: 600 }}>AGV URL: </span>
+            <code style={{ color: 'var(--text)' }}>{health?.agv_url ?? health?.robot_url ?? '—'}</code></div>
+          <div><span style={{ color: '#f59e0b', fontWeight: 600 }}>Arm URL: </span>
+            <code style={{ color: 'var(--text)' }}>{health?.arm_url ?? health?.robot_url ?? '—'}</code></div>
           <div><span style={{ color: 'var(--muted)' }}>Backend: </span>
             <code style={{ color: 'var(--text)' }}>{health?.backend ?? '—'}</code></div>
           <div><span style={{ color: 'var(--muted)' }}>Robot ID: </span>
@@ -181,7 +183,11 @@ export default function RobotSetup() {
       </div>
 
       {/* Robot API tester */}
-      <ApiTester robotUrl={health?.robot_url} backend={health?.backend} />
+      <ApiTester
+        agvUrl={health?.agv_url ?? health?.robot_url}
+        armUrl={health?.arm_url ?? health?.robot_url}
+        backend={health?.backend}
+      />
     </div>
   );
 }
@@ -199,12 +205,17 @@ type Field =
   | { key: string; label: string; kind: 'json';   def: unknown; help?: string };
 
 type Endpoint = {
-  group: string; method: 'GET' | 'POST'; path: string; title: string; desc: string; fields: Field[];
+  group: string; target: 'agv' | 'arm'; method: 'GET' | 'POST'; path: string;
+  title: string; desc: string; fields: Field[];
 };
 
+// Endpoints are grouped by which controller they hit — the AGV base and the arm have separate
+// IPs. "Common" (/setup) is applied to both controllers during a real run; the tester sends it
+// to the arm controller (switch the AGV URL to test the base side of setup if needed).
 const ROBOT_ENDPOINTS: Endpoint[] = [
-  { group: 'Setup', method: 'POST', path: '/setup', title: 'Configure robot',
-    desc: 'Upload kiosk definitions, named arm poses, and the navigation map. Call again to overwrite.',
+  // ── Common (both controllers) ──
+  { group: 'Common', target: 'arm', method: 'POST', path: '/setup', title: 'Configure robot',
+    desc: 'Common to both controllers. Upload kiosk definitions, named arm poses, and the navigation map. During a real run this is applied to BOTH the AGV and arm controllers; the tester sends it to the arm URL.',
     fields: [
       { key: 'robot_id',  label: 'robot_id',      kind: 'text', def: 'R-01' },
       { key: 'kiosks',    label: 'kiosks',        kind: 'json',
@@ -213,32 +224,30 @@ const ROBOT_ENDPOINTS: Endpoint[] = [
         def: { inspect_screen: [0, -45, 30, 0, 60, 0], card_reader_approach: [10, -30, 45, 0, 50, 0] } },
       { key: 'map',       label: 'map (base64)',  kind: 'text', def: '<base64 encoded map data>' },
     ] },
-  { group: 'Base (AGV)', method: 'POST', path: '/base/goto', title: 'Move base to target',
+
+  // ── AGV base APIs (AGV URL) ──
+  { group: 'AGV', target: 'agv', method: 'POST', path: '/base/goto', title: 'Move base to target',
     desc: 'Navigate the AGV base (on which the arm sits) to a kiosk or home. Non-blocking — poll /base/state.',
     fields: [
       { key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-001' },
       { key: 'target', label: 'target', kind: 'text', def: 'K-07', help: "kiosk id (e.g. K-07) or 'home'" },
     ] },
-  { group: 'Base (AGV)', method: 'GET', path: '/base/state', title: 'Base state',
+  { group: 'AGV', target: 'agv', method: 'POST', path: '/base/abort', title: 'Abort base',
+    desc: 'Immediately stop base motion.',
+    fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-002' }] },
+  { group: 'AGV', target: 'agv', method: 'GET', path: '/base/state', title: 'Base state',
     desc: 'Current base state, last cmd_id, robot_id. Poll until idle. Values: idle | moving | error.', fields: [] },
-  { group: 'Base (AGV)', method: 'GET', path: '/base/pose', title: 'Base pose',
+  { group: 'AGV', target: 'agv', method: 'GET', path: '/base/pose', title: 'Base pose',
     desc: 'Current 2D pose of the AGV base in the map frame: {x, y, theta}.', fields: [] },
-  { group: 'Capture', method: 'POST', path: '/capture', title: 'Capture screen',
+
+  // ── Arm APIs (Arm URL) ──
+  { group: 'Arm', target: 'arm', method: 'POST', path: '/capture', title: 'Capture screen',
     desc: 'Blocking — returns the image directly. type=screen runs the full perception pipeline (tag detect + rectify) and establishes the screen pose used by click/card; type=raw returns the raw camera frame.',
     fields: [
       { key: 'cmd_id', label: 'cmd_id', kind: 'text',   def: 'c-010' },
       { key: 'type',   label: 'type',   kind: 'select', def: 'screen', options: ['screen', 'raw'] },
     ] },
-  { group: 'Arm', method: 'POST', path: '/arm/command', title: 'Move arm to pose',
-    desc: 'Move the arm to a named pose from /setup (home always available). Non-blocking — poll /arm/state.',
-    fields: [
-      { key: 'cmd_id',    label: 'cmd_id',    kind: 'text',   def: 'c-030' },
-      { key: 'action',    label: 'action',    kind: 'select', def: 'goto_pose', options: ['goto_pose', 'home'] },
-      { key: 'pose_name', label: 'pose_name', kind: 'text',   def: 'inspect_screen', help: 'required when action = goto_pose' },
-    ] },
-  { group: 'Arm', method: 'GET', path: '/arm/state', title: 'Arm state',
-    desc: 'Current arm state + last cmd_id. Carries click_result / card_image after those ops. Values: idle | moving | holding_card | error.', fields: [] },
-  { group: 'Screen', method: 'POST', path: '/screen/click', title: 'Click screen point(s)',
+  { group: 'Arm', target: 'arm', method: 'POST', path: '/screen/click', title: 'Click screen point(s)',
     desc: 'Tap one or more (u,v) points on the last rectified capture. Requires a successful screen capture since the last base move. Non-blocking — poll /arm/state for click_result.',
     fields: [
       { key: 'cmd_id',             label: 'cmd_id',             kind: 'text',   def: 'c-020' },
@@ -246,26 +255,31 @@ const ROBOT_ENDPOINTS: Endpoint[] = [
       { key: 'capture_after_last', label: 'capture_after_last', kind: 'bool',   def: true },
       { key: 'delay_between_ms',   label: 'delay_between_ms',   kind: 'number', def: 500 },
     ] },
-  { group: 'Card', method: 'POST', path: '/card/pick', title: 'Pick card',
-    desc: 'Pick the credit card from its holder on the robot. Arm then holds the card (state holding_card); /arm/state includes card_image.',
-    fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-040' }] },
-  { group: 'Card', method: 'POST', path: '/card/tap', title: 'Tap card on reader',
-    desc: "Tap the held card on the kiosk's card reader. Requires a held card and a prior screen localization.",
-    fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-041' }] },
-  { group: 'Card', method: 'POST', path: '/card/replace', title: 'Replace card',
-    desc: 'Return the held card to its holder on the robot. Clears the held-card image.',
-    fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-042' }] },
-  { group: 'Recovery', method: 'POST', path: '/base/abort', title: 'Abort base',
-    desc: 'Immediately stop base motion.',
-    fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-002' }] },
-  { group: 'Recovery', method: 'POST', path: '/arm/abort', title: 'Abort arm',
+  { group: 'Arm', target: 'arm', method: 'POST', path: '/arm/command', title: 'Move arm to pose',
+    desc: 'Move the arm to a named pose from /setup (home always available). Non-blocking — poll /arm/state.',
+    fields: [
+      { key: 'cmd_id',    label: 'cmd_id',    kind: 'text',   def: 'c-030' },
+      { key: 'action',    label: 'action',    kind: 'select', def: 'goto_pose', options: ['goto_pose', 'home'] },
+      { key: 'pose_name', label: 'pose_name', kind: 'text',   def: 'inspect_screen', help: 'required when action = goto_pose' },
+    ] },
+  { group: 'Arm', target: 'arm', method: 'POST', path: '/arm/abort', title: 'Abort arm',
     desc: 'Immediately stop arm motion. Use with /arm/command {action:"home"} to recover from an error state.',
     fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-031' }] },
+  { group: 'Arm', target: 'arm', method: 'GET', path: '/arm/state', title: 'Arm state',
+    desc: 'Current arm state + last cmd_id. Carries click_result / card_image after those ops. Values: idle | moving | holding_card | error.', fields: [] },
+  { group: 'Arm', target: 'arm', method: 'POST', path: '/card/pick', title: 'Pick card',
+    desc: 'Pick the credit card from its holder on the robot. Arm then holds the card (state holding_card); /arm/state includes card_image.',
+    fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-040' }] },
+  { group: 'Arm', target: 'arm', method: 'POST', path: '/card/tap', title: 'Tap card on reader',
+    desc: "Tap the held card on the kiosk's card reader. Requires a held card and a prior screen localization.",
+    fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-041' }] },
+  { group: 'Arm', target: 'arm', method: 'POST', path: '/card/replace', title: 'Replace card',
+    desc: 'Return the held card to its holder on the robot. Clears the held-card image.',
+    fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-042' }] },
 ];
 
 const GROUP_COLOR: Record<string, string> = {
-  'Setup': '#6366f1', 'Base (AGV)': '#0ea5e9', 'Capture': '#10b981',
-  'Arm': '#f59e0b', 'Screen': '#8b5cf6', 'Card': '#ec4899', 'Recovery': '#ef4444',
+  'Common': '#6366f1', 'AGV': '#0ea5e9', 'Arm': '#f59e0b',
 };
 
 /** Replace long image_b64 strings with a short placeholder for the text view. */
@@ -331,7 +345,7 @@ function TesterRow({ ep }: { ep: Endpoint }) {
     }
     setLoading(true); setResp(null);
     try {
-      setResp(await api.robotTestCall({ method: ep.method, path: ep.path, body }));
+      setResp(await api.robotTestCall({ method: ep.method, path: ep.path, body, target: ep.target }));
     } catch (e) {
       setResp({ ok: false, method: ep.method, url: '', elapsed_ms: 0, error: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -438,29 +452,51 @@ function TesterRow({ ep }: { ep: Endpoint }) {
   );
 }
 
-function ApiTester({ robotUrl, backend }: { robotUrl?: string; backend?: string }) {
+const TESTER_SECTIONS: { group: string; target: 'agv' | 'arm'; title: string; note: string }[] = [
+  { group: 'Common', target: 'arm', title: 'Common', note: 'applied to both controllers' },
+  { group: 'AGV',    target: 'agv', title: 'AGV base APIs', note: 'sent to the AGV URL' },
+  { group: 'Arm',    target: 'arm', title: 'Arm APIs', note: 'sent to the Arm URL' },
+];
+
+function ApiTester({ agvUrl, armUrl, backend }: { agvUrl?: string; armUrl?: string; backend?: string }) {
   return (
     <div style={{ marginTop: 26 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
         <h3 style={{ margin: 0, color: 'var(--text)' }}>Robot API Tester</h3>
         <span style={{ fontSize: 12, color: 'var(--muted)' }}>call each endpoint in isolation</span>
       </div>
-      <p style={{ margin: '0 0 10px', color: 'var(--muted)', fontSize: 13, lineHeight: 1.5 }}>
-        Expand a row to edit the request body and send it to the physical robot at{' '}
-        <code style={{ color: 'var(--text)' }}>{robotUrl ?? '—'}</code>. Ordered by the typical mission
-        sequence. Non-blocking commands (base/arm/screen/card) return a <code>202</code> ack — poll the
-        matching <code>state</code> row to see completion.
+      <p style={{ margin: '0 0 12px', color: 'var(--muted)', fontSize: 13, lineHeight: 1.5 }}>
+        The AGV base and the arm are on separate controllers. AGV endpoints go to{' '}
+        <code style={{ color: '#0ea5e9' }}>{agvUrl ?? '—'}</code> and arm endpoints go to{' '}
+        <code style={{ color: '#f59e0b' }}>{armUrl ?? '—'}</code>. Expand a row to edit the body and send.
+        Non-blocking commands (base/arm/screen/card) return a <code>202</code> ack — poll the matching{' '}
+        <code>state</code> row to see completion.
       </p>
       {backend && backend !== 'real' && (
         <div style={{ padding: '9px 12px', borderRadius: 8, marginBottom: 12, fontSize: 12.5,
                       background: 'color-mix(in srgb, var(--yellow) 12%, transparent)', border: '1px solid var(--yellow)', color: 'var(--text)' }}>
-          Backend is <code>{backend}</code>, not <code>real</code> — calls target the configured Robot URL and will
+          Backend is <code>{backend}</code>, not <code>real</code> — calls target the configured AGV / Arm URLs and will
           fail unless a physical robot is reachable there.
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {ROBOT_ENDPOINTS.map(ep => <TesterRow key={`${ep.method} ${ep.path}`} ep={ep} />)}
-      </div>
+      {TESTER_SECTIONS.map(sec => {
+        const eps = ROBOT_ENDPOINTS.filter(e => e.group === sec.group);
+        const url = sec.target === 'agv' ? agvUrl : armUrl;
+        const color = GROUP_COLOR[sec.group] ?? 'var(--muted)';
+        return (
+          <div key={sec.group} style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: '4px 0 8px' }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color }}>{sec.title}</span>
+              <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+                {sec.note} · <code style={{ color: 'var(--text)' }}>{url ?? '—'}</code>
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {eps.map(ep => <TesterRow key={`${ep.method} ${ep.path}`} ep={ep} />)}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

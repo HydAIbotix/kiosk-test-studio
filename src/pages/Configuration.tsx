@@ -28,7 +28,7 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
   const [exploreMode,  setExplMode]   = useState<string>('claude');
   const [exploreSaving,setExpSaving]  = useState(false);
   const [exploreMsg,   setExploreMsg] = useState('');
-  const [robotForm,    setRobotForm]  = useState({ robot_backend: 'demo', robot_ip: '', robot_port: 8000 });
+  const [robotForm,    setRobotForm]  = useState({ robot_backend: 'demo', robot_ip: '', robot_port: 8000, agv_url: '', arm_url: '' });
   const [robotSaving,  setRobotSaving]= useState(false);
   const [robotMsg,     setRobotMsg]   = useState('');
   const [robotRestart, setRobotRestart]= useState(false);
@@ -38,7 +38,7 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
 
   const reload = () => api.getConfig().then(c => {
     setConfig(c);
-    setRobotForm({ robot_backend: c.robot_backend, robot_ip: c.robot_ip, robot_port: c.robot_port });
+    setRobotForm({ robot_backend: c.robot_backend, robot_ip: c.robot_ip, robot_port: c.robot_port, agv_url: c.agv_url || '', arm_url: c.arm_url || '' });
     setCardSvc(c.card_service_url || '');
     if (c.kiosks.length > 0) setKiosk(c.kiosks[0]);
   });
@@ -68,6 +68,8 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
         robot_backend: robotForm.robot_backend,
         robot_ip:      robotForm.robot_ip,
         robot_port:    robotForm.robot_port,
+        agv_url:       robotForm.agv_url,
+        arm_url:       robotForm.arm_url,
       });
       setRobotMsg('✓ Saved'); setRobotRestart(r.restart_required); reload();
     } catch (e) { setRobotMsg(`Error: ${e instanceof Error ? e.message : String(e)}`); }
@@ -153,37 +155,31 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
           })}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, maxWidth: 460, marginTop: 14 }}>
-          <div>
-            <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Robot IP</label>
-            <input value={robotForm.robot_ip} disabled={robotForm.robot_backend !== 'real'} placeholder="192.168.1.100"
-              onChange={e => setRobotForm(f => ({ ...f, robot_ip: e.target.value }))}
-              style={{
-                width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13,
-                background: robotForm.robot_backend === 'real' ? 'var(--bg)' : 'var(--surface)',
-                color: robotForm.robot_backend === 'real' ? 'var(--text)' : 'var(--muted)',
-                cursor: robotForm.robot_backend === 'real' ? 'text' : 'not-allowed',
-                opacity: robotForm.robot_backend === 'real' ? 1 : 0.55,
-              }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Robot Port</label>
-            <input type="number" value={robotForm.robot_port} disabled={robotForm.robot_backend !== 'real'} placeholder="8000"
-              onChange={e => setRobotForm(f => ({ ...f, robot_port: Number(e.target.value) }))}
-              style={{
-                width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13,
-                background: robotForm.robot_backend === 'real' ? 'var(--bg)' : 'var(--surface)',
-                color: robotForm.robot_backend === 'real' ? 'var(--text)' : 'var(--muted)',
-                cursor: robotForm.robot_backend === 'real' ? 'text' : 'not-allowed',
-                opacity: robotForm.robot_backend === 'real' ? 1 : 0.55,
-              }} />
-          </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, maxWidth: 560, marginTop: 14 }}>
+          {([
+            ['agv_url', 'AGV Base URL', 'http://192.168.1.101:8000', 'mobile base — /base/* endpoints'],
+            ['arm_url', 'Arm URL',      'http://192.168.1.100:8000', 'arm, camera, screen & card endpoints'],
+          ] as [ 'agv_url' | 'arm_url', string, string, string ][]).map(([key, label, ph, hint]) => (
+            <div key={key}>
+              <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>{label}</label>
+              <input value={robotForm[key]} disabled={robotForm.robot_backend !== 'real'} placeholder={ph}
+                onChange={e => setRobotForm(f => ({ ...f, [key]: e.target.value }))}
+                style={{
+                  width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13,
+                  background: robotForm.robot_backend === 'real' ? 'var(--bg)' : 'var(--surface)',
+                  color: robotForm.robot_backend === 'real' ? 'var(--text)' : 'var(--muted)',
+                  cursor: robotForm.robot_backend === 'real' ? 'text' : 'not-allowed',
+                  opacity: robotForm.robot_backend === 'real' ? 1 : 0.55,
+                }} />
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>{hint}</span>
+            </div>
+          ))}
         </div>
 
         <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
           {robotForm.robot_backend === 'real'
-            ? <>Robot URL: <code>http://{robotForm.robot_ip || '…'}:{robotForm.robot_port}/api/v1</code> — verify health in <strong>Robot Setup</strong>.</>
-            : <>IP / port apply only to the <code>real</code> backend. <code>{robotForm.robot_backend}</code> runs in-browser (Playwright) or scripted (demo).</>}
+            ? <>The AGV base and arm may be on separate IPs. <code>/api/v1</code> is appended automatically; leave a field blank to fall back to <code>{robotForm.robot_ip || '192.168.1.100'}:{robotForm.robot_port}</code>. Verify health in <strong>Robot Setup</strong>.</>
+            : <>These URLs apply only to the <code>real</code> backend. <code>{robotForm.robot_backend}</code> runs in-browser (Playwright) or scripted (demo).</>}
         </p>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>

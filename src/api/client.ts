@@ -50,15 +50,15 @@ export const api = {
     return req<{imported:number;new:number}>('/test-cases/upload', { method: 'POST', body: form, headers: {} }, 30_000);
   },
   getConfig:     ()                    => req<Config>('/config'),
-  setRobotConn:  (body: {robot_backend: string; robot_ip?: string; robot_port?: number}) =>
-    req<{status:string; robot_backend:string; robot_ip:string; robot_port:number; robot_url:string; persisted:boolean; restart_required:boolean}>('/config/robot', {method:'PATCH', body:JSON.stringify(body)}),
+  setRobotConn:  (body: {robot_backend: string; robot_ip?: string; robot_port?: number; agv_url?: string; arm_url?: string}) =>
+    req<{status:string; robot_backend:string; robot_ip:string; robot_port:number; agv_url:string; arm_url:string; agv_base:string; arm_base:string; robot_url:string; persisted:boolean; restart_required:boolean}>('/config/robot', {method:'PATCH', body:JSON.stringify(body)}),
   upsertKiosk:   (k: KioskConfig)      => req('/config/kiosk', {method:'PUT',body:JSON.stringify(k)}),
   getDevices:    ()                    => req<DeviceConfig[]>('/config/devices'),
   upsertDevice:  (d: DeviceConfig)     => req('/config/device', {method:'PUT',body:JSON.stringify(d)}),
   deleteDevice:  (alias: string)       => req(`/config/device/${encodeURIComponent(alias)}`, {method:'DELETE'}),
   getRobots:   ()                  => req<{mode:string;robots:Robot[]}>('/robots'),
   getRobotHealth: (capture = true) => req<RobotHealth>(`/robot/health?capture=${capture}`, undefined, 40_000),
-  robotTestCall:  (payload: {method: string; path: string; body?: unknown; timeout?: number}) =>
+  robotTestCall:  (payload: {method: string; path: string; body?: unknown; timeout?: number; target?: 'agv'|'arm'}) =>
     req<RobotTestResult>('/robot/test-call', {method: 'POST', body: JSON.stringify(payload)}, 45_000),
   getAppMap:   ()                  => req<AppMap>('/app-map'),
   clearAppMap: ()                  => req('/app-map', {method:'DELETE'}),
@@ -132,6 +132,7 @@ export type DeviceConfig = {
 
 export type Config = {
   robot_backend: string; robot_ip: string; robot_port: number; robot_id: string;
+  agv_url: string; arm_url: string; agv_base: string; arm_base: string;
   exploration_mode: string;
   card_service_url: string;
   viewport: {width:number;height:number}; camera: {width:number;height:number};
@@ -159,6 +160,8 @@ export type RobotComponent = {
 export type RobotHealth = {
   backend: string;
   robot_url: string;
+  agv_url?: string;
+  arm_url?: string;
   robot_id: string;
   kiosk_id?: string;
   simulated?: boolean;
