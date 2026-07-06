@@ -13,12 +13,29 @@ export default function AppMapPage() {
   const [annotated,    setAnnotated]   = useState<Record<string, string[]>>({});
   const [shotsOpen,    setShotsOpen]   = useState(false);
   const [imgModal,     setImgModal]    = useState<{ src: string; label: string } | null>(null);
+  const [confirmApp,   setConfirmApp]  = useState<string | null>(null);
+  const [clearingApp,  setClearingApp] = useState(false);
+  const [clearMsg,     setClearMsg]    = useState('');
 
-  useEffect(() => {
+  const reload = () => {
     api.getAppMap().then(m => { setMap(m); setLoading(false); });
     api.getScreenshots().then(setShots).catch(() => setShots([]));
     api.getAnnotatedScreenshots().then(setAnnotated).catch(() => setAnnotated({}));
-  }, []);
+  };
+
+  useEffect(() => { reload(); }, []);
+
+  const clearApp = async (appId: string, label: string) => {
+    setClearingApp(true); setClearMsg('');
+    try {
+      await api.clearAppMapApp(appId);
+      setConfirmApp(null); setAppFilter('all'); setSel(null);
+      setClearMsg(`Cleared "${label}". Re-explore it from the App Explorer page (its map is now empty; other apps are untouched).`);
+      reload();
+    } catch (e) {
+      setClearMsg(`Clear failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally { setClearingApp(false); }
+  };
 
   if (loading) return <p className="text-muted">Loading app map…</p>;
   if (!map?.exists) return (
@@ -58,7 +75,38 @@ export default function AppMapPage() {
                 {a.label || a.app_id} ({a.screen_count})
               </button>
             ))}
+
+            {/* Per-app clear — only the selected app's screens are removed (others untouched) */}
+            {appFilter !== 'all' && (() => {
+              const cur = apps.find(a => a.app_id === appFilter);
+              const label = cur?.label || appFilter;
+              return (
+                <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                  {confirmApp === appFilter ? (
+                    <>
+                      <span className="text-muted" style={{ fontSize: 12 }}>Clear <strong>{label}</strong>'s map?</span>
+                      <button className="btn btn-danger btn-sm" disabled={clearingApp}
+                        onClick={() => clearApp(appFilter, label)}>
+                        {clearingApp ? 'Clearing…' : 'Yes, clear this app'}
+                      </button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => setConfirmApp(null)}>Cancel</button>
+                    </>
+                  ) : (
+                    <button className="btn btn-danger btn-sm" onClick={() => { setConfirmApp(appFilter); setClearMsg(''); }}
+                      title={`Delete only ${label}'s screens so you can re-explore it`}>
+                      🗑 Clear &amp; re-explore “{label}”
+                    </button>
+                  )}
+                </span>
+              );
+            })()}
           </div>
+          {clearMsg && <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>{clearMsg}</p>}
+          {appFilter === 'all' && apps.length > 0 && (
+            <p className="text-muted" style={{ fontSize: 11.5, marginTop: 8 }}>
+              Select an app above to clear &amp; re-explore just that app. The screenshot count below is raw captures across <em>all</em> apps.
+            </p>
+          )}
         </div>
       )}
 

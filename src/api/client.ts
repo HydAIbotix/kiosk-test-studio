@@ -62,6 +62,7 @@ export const api = {
     req<RobotTestResult>('/robot/test-call', {method: 'POST', body: JSON.stringify(payload)}, 45_000),
   getAppMap:   ()                  => req<AppMap>('/app-map'),
   clearAppMap: ()                  => req('/app-map', {method:'DELETE'}),
+  clearAppMapApp: (app_id: string) => req(`/app-map/${encodeURIComponent(app_id)}`, {method:'DELETE'}),
   resetAll:    (signal?: AbortSignal) => req<{status:string;message:string}>('/reset', {method:'POST', _signal: signal}, 30_000),
   startExplore:    (kiosk_url:string, kiosk_id?:string) => req<{explore_id:string;status:string}>('/explore', {method:'POST',body:JSON.stringify({kiosk_url, ...(kiosk_id ? {kiosk_id} : {})})}),
   getExploreStatus:(id: string)      => req<{explore_id:string;status:string;message:string}>(`/explore/${id}`),

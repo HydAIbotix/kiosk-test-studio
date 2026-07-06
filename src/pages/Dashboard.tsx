@@ -12,7 +12,9 @@ export default function Dashboard({ onNav }: { onNav: (p: string) => void }) {
   const [runs,      setRuns]     = useState<Run[]>([]);
   const [robots,    setRobots]   = useState<Robot[]>([]);
   const [loading,   setLoading]  = useState(true);
-  const [apiOnline, setOnline]   = useState(false);
+  // null = still checking (first poll not resolved). Avoids a "Backend offline" flash on every
+  // mount/refresh before the first health poll comes back. Only `false` (confirmed) shows the banner.
+  const [apiOnline, setOnline]   = useState<boolean | null>(null);
   const [hasMap,    setHasMap]   = useState<boolean | null>(null);
   const [mapScr,    setMapScr]   = useState(0);
   const failCount = useRef(0);
@@ -43,14 +45,14 @@ export default function Dashboard({ onNav }: { onNav: (p: string) => void }) {
 
   // Preconditions for "Start Run"
   const preconditions: { ok: boolean; label: string; fix?: string }[] = [
-    { ok: apiOnline, label: 'API server reachable' },
+    { ok: apiOnline === true, label: 'API server reachable' },
     { ok: !!hasMap,  label: `App map explored (${mapScr} screens)`, fix: 'explorer' },
   ];
   const allReady = preconditions.every(p => p.ok);
 
   return (
     <div>
-      {!apiOnline && (
+      {apiOnline === false && (
         <div style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: 8, padding: '10px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ color: 'var(--yellow)', fontSize: 16 }}>⚠</span>
           <span style={{ fontSize: 13 }}>
