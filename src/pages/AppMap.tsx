@@ -114,7 +114,11 @@ export default function AppMapPage() {
       <div className="grid-4 section">
         <Stat label="Screens"        value={screens.length} />
         <Stat label="Total Elements" value={totalEl} />
-        <Stat label="Entry Screen"   value={map.entry_screen || '—'} />
+        <Stat label="Entry Screen"   value={
+          appFilter !== 'all'
+            ? (apps.find(a => a.app_id === appFilter)?.entry_screen || '—')
+            : (apps.length === 1 ? (apps[0].entry_screen || '—') : (apps.length > 1 ? '(per app)' : (map.entry_screen || '—')))
+        } />
         <Stat label="Explored"       value={map.explored_at ? new Date(map.explored_at).toLocaleString() : 'Date not recorded'} />
       </div>
 

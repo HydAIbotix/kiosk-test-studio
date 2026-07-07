@@ -59,11 +59,12 @@ function ResetButton() {
     try {
       await api.resetAll(ctrl.signal);
       if (ctrl.signal.aborted) return;   // user cancelled — do nothing
-      // Clear only cached test plans (regenerated on demand) to match the backend.
-      // Test-case config, selections, and credentials are preserved.
+      // Test cases are deleted server-side now, so clear their client-side artifacts too:
+      // cached plans, per-test field configs, and the selection list. (Credentials preserved.)
       Object.keys(localStorage).forEach(k => {
-        if (k.startsWith('tc_plan_')) localStorage.removeItem(k);
+        if (k.startsWith('tc_plan_') || k.startsWith('tc_config_')) localStorage.removeItem(k);
       });
+      localStorage.removeItem('selected_tcs');
       setDone(true);
       setTimeout(() => window.location.reload(), 1200);
     } catch (e) {
@@ -85,7 +86,7 @@ function ResetButton() {
     <div style={{ padding: '12px 14px', borderTop: '1px solid var(--border)' }}>
       {!busy && (
         <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10, lineHeight: 1.5 }}>
-          Deletes all generated test plans, test runs and results. Does not impact App map, raw test cases and global config.
+          Deletes all uploaded test cases, generated test plans, test runs and results. Does not impact the App map or global config.
         </p>
       )}
       {busy && (

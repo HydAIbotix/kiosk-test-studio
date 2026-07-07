@@ -8,7 +8,8 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
   const [message,    setMessage]   = useState('');
   const [existing,   setExisting]  = useState<AppMap | null>(null);
   const [clearing,   setClearing]  = useState(false);
-  const [confirmClear, setConfirm] = useState(false);
+  const [confirmClear, setConfirm] = useState<string>('');   // '' | 'ALL' | <app_id>
+  const [clearMsg,   setClearMsg]  = useState('');
   const exploreIdRef = useRef('');
   const pollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -26,7 +27,7 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
     stopPolling();
     setStatus('running');
     setMessage('Explorer launched — Playwright is navigating the kiosk. This takes 2–5 minutes.');
-    setConfirm(false);
+    setConfirm(''); setClearMsg('');
     try {
       const res = await api.startExplore(kioskUrl, kioskId);
       exploreIdRef.current = res.explore_id;
@@ -54,58 +55,94 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
     }
   };
 
-  const clearMap = async () => {
+  const clearAll = async () => {
     setClearing(true);
     try {
       await api.clearAppMap();
-      setExisting(null);
-      setConfirm(false);
-      setStatus('idle');
-      setMessage('');
+      setExisting(null); setConfirm(''); setStatus('idle');
+      setClearMsg('Cleared all apps and their exploration screenshots.');
     } catch (e) {
-      setMessage(`Clear failed: ${e instanceof Error ? e.message : String(e)}`);
+      setClearMsg(`Clear failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally { setClearing(false); }
+  };
+
+  const clearOneApp = async (appId: string, label: string) => {
+    setClearing(true);
+    try {
+      await api.clearAppMapApp(appId);
+      setConfirm('');
+      const m = await api.getAppMap();
+      setExisting(m.exists ? m : null);
+      setClearMsg(`Cleared "${label}" and its screenshots — other apps are untouched. Re-explore it below.`);
+    } catch (e) {
+      setClearMsg(`Clear failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally { setClearing(false); }
   };
 
   const screenCount  = existing ? Object.keys(existing.screens).length : 0;
   const elementCount = existing ? Object.values(existing.screens).reduce((s, sc) => s + sc.element_count, 0) : 0;
+  const appList      = existing?.apps ? Object.values(existing.apps) : [];
 
   return (
     <div>
       {existing && (
         <div className="card section" style={{ borderColor: 'rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.06)' }}>
-          <div className="row" style={{ flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
-            <div style={{ flex: 1 }}>
-              <div className="section-title" style={{ marginBottom: 6 }}>Existing App Map Loaded</div>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <span className="badge badge-accent">{screenCount} screens</span>
-                <span className="badge badge-muted">{elementCount} elements</span>
-                <span className="text-muted" style={{ fontSize: 12 }}>
-                  Entry: <code style={{ color: 'var(--accent2)' }}>{existing.entry_screen}</code>
-                </span>
-              </div>
-              <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
-                This map is used by all test runs. Re-explore only when the kiosk UI has changed.
-              </p>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
-              <button className="btn btn-secondary btn-sm" onClick={() => onNav('app-map')}>View App Map →</button>
-              {!confirmClear
-                ? <button className="btn btn-danger btn-sm" onClick={() => setConfirm(true)}>🗑 Clear &amp; Re-explore</button>
-                : (
-                  <div className="card card-sm" style={{ borderColor: 'var(--red)', textAlign: 'left' }}>
-                    <p style={{ fontSize: 12, marginBottom: 8 }}>Delete existing map and start fresh?</p>
-                    <div className="row">
-                      <button className="btn btn-danger btn-sm" onClick={clearMap} disabled={clearing}>
-                        {clearing ? 'Clearing…' : 'Yes, delete it'}
-                      </button>
-                      <button className="btn btn-secondary btn-sm" onClick={() => setConfirm(false)}>Cancel</button>
+          <div className="row" style={{ marginBottom: 10 }}>
+            <div className="section-title" style={{ marginBottom: 0 }}>Explored Apps</div>
+            <span className="spacer" />
+            <button className="btn btn-secondary btn-sm" onClick={() => onNav('app-map')}>View App Map →</button>
+          </div>
+
+          {appList.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {appList.map(a => (
+                <div key={a.app_id} className="card card-sm" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <strong style={{ color: 'var(--text)' }}>{a.label || a.app_id}</strong>
+                    <div className="row" style={{ gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                      <span className="badge badge-accent">{a.screen_count} screen{a.screen_count === 1 ? '' : 's'}</span>
+                      <span className="text-muted" style={{ fontSize: 12 }}>
+                        entry: <code style={{ color: 'var(--accent2)' }}>{a.entry_screen || '—'}</code>
+                      </span>
                     </div>
                   </div>
-                )
-              }
+                  {confirmClear === a.app_id ? (
+                    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <span className="text-muted" style={{ fontSize: 12 }}>Clear this app?</span>
+                      <button className="btn btn-danger btn-sm" disabled={clearing} onClick={() => clearOneApp(a.app_id, a.label || a.app_id)}>
+                        {clearing ? 'Clearing…' : 'Yes'}
+                      </button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => setConfirm('')}>Cancel</button>
+                    </span>
+                  ) : (
+                    <button className="btn btn-danger btn-sm" onClick={() => { setConfirm(a.app_id); setClearMsg(''); }}>🗑 Clear &amp; re-explore</button>
+                  )}
+                </div>
+              ))}
             </div>
+          ) : (
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <span className="badge badge-accent">{screenCount} screens</span>
+              <span className="badge badge-muted">{elementCount} elements</span>
+              <span className="text-muted" style={{ fontSize: 12 }}>entry: <code style={{ color: 'var(--accent2)' }}>{existing.entry_screen}</code></span>
+            </div>
+          )}
+
+          <div className="row" style={{ marginTop: 12, flexWrap: 'wrap', gap: 8 }}>
+            <p className="text-muted" style={{ fontSize: 12, margin: 0, flex: 1, minWidth: 220 }}>
+              Clearing an app deletes only its screens and screenshots — other apps stay intact.
+            </p>
+            {confirmClear === 'ALL' ? (
+              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                <span className="text-muted" style={{ fontSize: 12 }}>Clear everything?</span>
+                <button className="btn btn-danger btn-sm" disabled={clearing} onClick={clearAll}>{clearing ? 'Clearing…' : 'Yes, clear all'}</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => setConfirm('')}>Cancel</button>
+              </span>
+            ) : (
+              <button className="btn btn-secondary btn-sm" onClick={() => { setConfirm('ALL'); setClearMsg(''); }}>Clear ALL apps &amp; screenshots</button>
+            )}
           </div>
+          {clearMsg && <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>{clearMsg}</p>}
         </div>
       )}
 
