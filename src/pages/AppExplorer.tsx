@@ -104,6 +104,11 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
                       <span className="text-muted" style={{ fontSize: 12 }}>
                         entry: <code style={{ color: 'var(--accent2)' }}>{a.entry_screen || '—'}</code>
                       </span>
+                      {a.url && (
+                        <span className="text-muted" style={{ fontSize: 12 }}>
+                          url: <code style={{ color: 'var(--accent2)' }}>{a.url}</code>
+                        </span>
+                      )}
                     </div>
                   </div>
                   {confirmClear === a.app_id ? (
@@ -167,7 +172,13 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
           </div>
           <div className="form-group">
             <label className="form-label">Kiosk ID <span className="text-muted">(which device this app belongs to)</span></label>
-            <input className="form-input" value={kioskId} onChange={e => setKioskId(e.target.value)} placeholder="KIOSK-ID-1" />
+            <input className="form-input" value={kioskId} onChange={e => {
+              const id = e.target.value;
+              setKioskId(id);
+              // Re-fill the URL we remembered for this kiosk the last time it was explored.
+              const prev = existing?.apps?.[id]?.url;
+              if (prev) setKioskUrl(prev);
+            }} placeholder="KIOSK-ID-1" />
             <p className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
               Tags this app's screens. Must match the Kiosk ID mapped to your test-case device abbreviations in
               <strong> Configuration → Device Map</strong>.

@@ -207,8 +207,12 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
 
   const allChecked = filtered.length > 0 && filtered.every(c => checked.has(c.test_id));
 
-  // Config fields come from Claude's plan (required_config), not from regex
-  const credFields  = plan?.required_config ?? [];
+  // Config fields come from Claude's plan (required_config), not from regex.
+  // Defensive: Claude occasionally emits a malformed entry (missing key/label); drop keyless
+  // ones and fall back to the key for a missing label so a bad plan can never crash the page.
+  const credFields  = (plan?.required_config ?? [])
+    .filter(f => f && f.key)
+    .map(f => ({ ...f, label: f.label || f.key }));
   const selCfg      = selected ? (tcConfigs[selected.test_id] || api.getTcConfig(selected.test_id) || {}) : {};
   const allFilled   = credFields.every(f => selCfg[f.key]?.trim());
 

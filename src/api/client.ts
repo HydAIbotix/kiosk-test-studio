@@ -185,6 +185,7 @@ export type AppMapScreen = {
 
 export type AppMapAppInfo = {
   app_id: string; label: string; entry_screen: string; screen_count: number; explored_at: string;
+  url?: string;
 };
 
 export type AppMap = {

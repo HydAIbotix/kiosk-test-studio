@@ -29,6 +29,18 @@ const CH_COLOR: Record<string, string> = {
   robot: '#f59e0b', web: '#3b82f6', db: '#a855f7', validation: '#22c55e',
 };
 
+// Group selected test cases by the kiosk they run on, so the operator sees at a glance which
+// kiosk each test (and its plan) targets.  The backend resolves the real target kiosk from the
+// Device Map at run time; this mirrors the same kiosk_id carried on each test case.
+function groupByKiosk(tcs: TestCase[]): [string, TestCase[]][] {
+  const groups: Record<string, TestCase[]> = {};
+  for (const tc of tcs) {
+    const kid = tc.kiosk_id || 'unassigned';
+    (groups[kid] ??= []).push(tc);
+  }
+  return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+}
+
 // ── Plan preview for one TC ────────────────────────────────────────────────────
 function TcPlanPreview({ tc, plan }: { tc: TestCase; plan: TcPlan | null }) {
   const [open, setOpen] = useState(false);
@@ -215,15 +227,22 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
 
           {!tcLoading && selectedTcs.length > 0 && (
             <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 0', marginBottom: 14 }}>
-              {selectedTcs.map(tc => (
-                <div key={tc.test_id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 12px', borderBottom: '1px solid var(--border)' }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent2)' }}>{tc.test_id}</div>
-                    <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.4 }}>{tc.summary}</div>
+              {groupByKiosk(selectedTcs).map(([kid, tcs]) => (
+                <div key={kid}>
+                  {/* Kiosk header — the target kiosk this group of tests executes on */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: 'rgba(99,102,241,0.08)', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0 }}>
+                    <span style={{ fontSize: 13 }}>🖥️</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, color: 'var(--accent2)', fontFamily: 'monospace' }}>{kid}</span>
+                    <span style={{ fontSize: 10, color: 'var(--muted)' }}>· {tcs.length} test{tcs.length === 1 ? '' : 's'}</span>
                   </div>
-                  {tc.kiosk_id && (
-                    <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0, alignSelf: 'center' }}>{tc.kiosk_id}</span>
-                  )}
+                  {tcs.map(tc => (
+                    <div key={tc.test_id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 12px 7px 24px', borderBottom: '1px solid var(--border)' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent2)' }}>{tc.test_id}</div>
+                        <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.4 }}>{tc.summary}</div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>
@@ -259,9 +278,19 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
               <p style={{ fontSize: 13 }}>No test cases selected. Go to Test Intake to select test cases for this run.</p>
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 500, overflowY: 'auto' }}>
-              {selectedTcs.map(tc => (
-                <TcPlanPreview key={tc.test_id} tc={tc} plan={plans[tc.test_id] ?? null} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 500, overflowY: 'auto' }}>
+              {groupByKiosk(selectedTcs).map(([kid, tcs]) => (
+                <div key={kid} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {/* One plan group per kiosk — the plans below all execute on this kiosk */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 13 }}>🖥️</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, color: 'var(--accent2)', fontFamily: 'monospace' }}>{kid}</span>
+                    <span style={{ height: 1, flex: 1, background: 'var(--border)' }} />
+                  </div>
+                  {tcs.map(tc => (
+                    <TcPlanPreview key={tc.test_id} tc={tc} plan={plans[tc.test_id] ?? null} />
+                  ))}
+                </div>
               ))}
             </div>
           )}
