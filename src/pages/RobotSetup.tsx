@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { api, type RobotHealth, type RobotComponent, type RobotTestResult } from '../api/client';
 import armImg from '../assets/arm.jpg';
 import baseImg from '../assets/base.jpg';
@@ -182,12 +182,152 @@ export default function RobotSetup() {
         ))}
       </div>
 
+      {/* camera / coordinate calibration */}
+      <CameraCalibration health={health} />
+
       {/* Robot API tester */}
       <ApiTester
         agvUrl={health?.agv_url ?? health?.robot_url}
         armUrl={health?.arm_url ?? health?.robot_url}
         backend={health?.backend}
       />
+    </div>
+  );
+}
+
+// ── Camera & coordinate calibration ───────────────────────────────────────────────
+// The ONE thing an operator sets so the arm taps accurately: the exploration viewport must have the
+// SAME ASPECT RATIO as the robot's rectified camera frame. app_map coords are learned in the
+// Playwright exploration viewport; at test time real_robot._scale maps them to the camera's rectified
+// pixels PER-AXIS. That's exact when the two share an aspect ratio — otherwise a responsive app
+// reflows and taps drift. The camera resolution itself is auto-measured from every /capture (shown in
+// the Camera Capture card above and used by calibration), so "camera" here is only a pre-calibration
+// seed. "Match to measured camera" copies the measured rectified resolution into the viewport (→ 1:1,
+// no aspect risk). Camera-model-agnostic: a new camera just reports different dims; nothing to code.
+
+function aspectStr(w: number, h: number): string {
+  if (!w || !h) return '—';
+  const r = w / h;
+  const known: [number, string][] = [[16 / 9, '16:9'], [4 / 3, '4:3'], [14 / 9, '14:9'], [3 / 2, '3:2'], [16 / 10, '16:10']];
+  for (const [val, label] of known) if (Math.abs(r - val) < 0.02) return `${label}`;
+  return r.toFixed(3);
+}
+
+function NumField({ label, value, onChange }: { label: string; value: number; onChange: (n: number) => void }) {
+  return (
+    <div>
+      <label style={{ display: 'block', fontSize: 11, color: 'var(--muted)', marginBottom: 3 }}>{label}</label>
+      <input type="number" value={value} min={1}
+        onChange={e => onChange(Math.max(0, Number(e.target.value)))}
+        style={{ width: 96, fontSize: 12.5, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }} />
+    </div>
+  );
+}
+
+function CameraCalibration({ health }: { health: RobotHealth | null }) {
+  const [vw, setVw] = useState(1400);
+  const [vh, setVh] = useState(900);
+  const [cw, setCw] = useState(1280);
+  const [ch, setCh] = useState(720);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const cfg = await api.getConfig();
+        setVw(cfg.viewport.width); setVh(cfg.viewport.height);
+        setCw(cfg.camera.width);   setCh(cfg.camera.height);
+      } catch { /* keep defaults */ } finally { setLoaded(true); }
+    })();
+  }, []);
+
+  const measuredW = Number(health?.components?.camera?.width) || 0;
+  const measuredH = Number(health?.components?.camera?.height) || 0;
+  const aspectMismatch = loaded && !!vh && !!ch && Math.abs(vw / vh - cw / ch) > 0.02;
+
+  const save = async (body: { viewport_width?: number; viewport_height?: number; camera_width?: number; camera_height?: number }) => {
+    setSaving(true); setMsg(null);
+    try {
+      const r = await api.setCameraConfig(body);
+      setMsg({ ok: true, text: `Saved · exploration ${r.viewport.width}×${r.viewport.height} (${aspectStr(r.viewport.width, r.viewport.height)}) · camera seed ${r.camera.width}×${r.camera.height} (${aspectStr(r.camera.width, r.camera.height)}) · ${r.aspect_matches ? 'aspect matches ✓' : 'aspect differs ⚠ — taps may drift on a responsive app'}` });
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally { setSaving(false); }
+  };
+
+  const btn = (bg: string): CSSProperties => ({
+    padding: '7px 14px', borderRadius: 7, border: 'none', background: bg, color: '#fff',
+    fontSize: 12.5, fontWeight: 600, cursor: saving ? 'wait' : 'pointer', opacity: saving ? 0.7 : 1,
+  });
+
+  return (
+    <div style={{ marginTop: 26, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
+        <h3 style={{ margin: 0, color: 'var(--text)' }}>Camera &amp; Coordinate Calibration</h3>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>keeps arm taps accurate</span>
+      </div>
+      <p style={{ margin: '0 0 14px', color: 'var(--muted)', fontSize: 13, lineHeight: 1.55 }}>
+        App exploration runs in Playwright at the <strong>exploration viewport</strong>; the robot photographs the
+        kiosk and rectifies it to the <strong>camera</strong> resolution. Taps stay accurate when the two share an
+        <strong> aspect ratio</strong> (the per-axis scale then absorbs any size difference). The camera resolution is
+        auto-measured on every capture — the field below is only a pre-calibration seed. Set the exploration viewport to
+        the camera’s aspect ratio (or click “Match to measured camera”) <strong>before exploring</strong>.
+      </p>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+            Exploration viewport <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· {aspectStr(vw, vh)}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <NumField label="Width"  value={vw} onChange={setVw} />
+            <NumField label="Height" value={vh} onChange={setVh} />
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+            Camera seed <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· {aspectStr(cw, ch)} · auto-measured on capture</span>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <NumField label="Width"  value={cw} onChange={setCw} />
+            <NumField label="Height" value={ch} onChange={setCh} />
+          </div>
+        </div>
+        {(measuredW > 0 && measuredH > 0) && (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+              Measured (last capture) <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· {aspectStr(measuredW, measuredH)}</span>
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text)', padding: '6px 0' }}>{measuredW} × {measuredH}</div>
+          </div>
+        )}
+      </div>
+
+      {aspectMismatch && (
+        <div style={{ padding: '9px 12px', borderRadius: 8, marginBottom: 12, fontSize: 12.5,
+          background: 'color-mix(in srgb, var(--yellow) 12%, transparent)', border: '1px solid var(--yellow)', color: 'var(--text)' }}>
+          ⚠ Exploration viewport ({aspectStr(vw, vh)}) and camera ({aspectStr(cw, ch)}) have different aspect ratios —
+          re-explore at a matching aspect ratio, or the arm may tap slightly off on a responsive kiosk app.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+        <button onClick={() => save({ viewport_width: vw, viewport_height: vh, camera_width: cw, camera_height: ch })}
+          disabled={saving} style={btn('#6366f1')}>{saving ? 'Saving…' : 'Save'}</button>
+        <button onClick={() => { if (measuredW && measuredH) { setVw(measuredW); setVh(measuredH); save({ viewport_width: measuredW, viewport_height: measuredH }); } }}
+          disabled={saving || !measuredW || !measuredH}
+          title={measuredW ? '' : 'Run “Capture + Calibrate” first to measure the rectified resolution'}
+          style={{ ...btn('#0ea5e9'), opacity: (saving || !measuredW) ? 0.5 : 1, cursor: (!measuredW || saving) ? 'not-allowed' : 'pointer' }}>
+          Match viewport to measured camera
+        </button>
+        {msg && (
+          <span style={{ fontSize: 12.5, color: msg.ok ? 'var(--green)' : 'var(--red)' }}>
+            {msg.ok ? '✓ ' : '✗ '}{msg.text}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

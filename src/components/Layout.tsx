@@ -4,7 +4,7 @@ import { api } from '../api/client';
 
 type Page =
   | 'dashboard' | 'explorer' | 'app-map' | 'test-intake'
-  | 'configuration' | 'robot-setup' | 'execution' | 'monitor' | 'results';
+  | 'configuration' | 'robot-setup' | 'camera-test' | 'execution' | 'monitor' | 'results';
 
 const NAV: { group: string; items: { id: Page; icon: string; label: string }[] }[] = [
   {
@@ -32,6 +32,7 @@ const NAV: { group: string; items: { id: Page; icon: string; label: string }[] }
     items: [
       { id: 'configuration', icon: '⚙',  label: 'Configuration' },
       { id: 'robot-setup',   icon: '🤖', label: 'Robot Setup' },
+      { id: 'camera-test',   icon: '📷', label: 'Camera Vision Test' },
     ],
   },
 ];

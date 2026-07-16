@@ -6,13 +6,14 @@ import AppMapPage   from './pages/AppMap';
 import TestIntake   from './pages/TestIntake';
 import Configuration from './pages/Configuration';
 import RobotSetup    from './pages/RobotSetup';
+import CameraVisionTest from './pages/CameraVisionTest';
 import Execution    from './pages/Execution';
 import LiveMonitor  from './pages/LiveMonitor';
 import Results      from './pages/Results';
 
 type Page =
   | 'dashboard' | 'explorer' | 'app-map' | 'test-intake'
-  | 'configuration' | 'robot-setup' | 'execution' | 'monitor' | 'results';
+  | 'configuration' | 'robot-setup' | 'camera-test' | 'execution' | 'monitor' | 'results';
 
 const TITLES: Record<Page, string> = {
   'dashboard':     'Dashboard',
@@ -21,6 +22,7 @@ const TITLES: Record<Page, string> = {
   'test-intake':   'Test Intake',
   'configuration': 'Configuration',
   'robot-setup':   'Robot Setup',
+  'camera-test':   'Camera Vision Test',
   'execution':     'Test Execution',
   'monitor':       'Live Monitor',
   'results':       'Test Results',
@@ -38,6 +40,7 @@ export default function App() {
       {page === 'test-intake'   && <TestIntake onNav={nav} />}
       {page === 'configuration' && <Configuration onNav={nav} />}
       {page === 'robot-setup'   && <RobotSetup />}
+      {page === 'camera-test'   && <CameraVisionTest />}
       {page === 'execution'     && <Execution    onNav={nav} />}
       {page === 'monitor'       && <LiveMonitor />}
       {page === 'results'       && <Results />}

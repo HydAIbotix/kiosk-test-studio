@@ -52,10 +52,21 @@ export const api = {
   getConfig:     ()                    => req<Config>('/config'),
   setRobotConn:  (body: {robot_backend: string; robot_ip?: string; robot_port?: number; agv_url?: string; arm_url?: string}) =>
     req<{status:string; robot_backend:string; robot_ip:string; robot_port:number; agv_url:string; arm_url:string; agv_base:string; arm_base:string; robot_url:string; persisted:boolean; restart_required:boolean}>('/config/robot', {method:'PATCH', body:JSON.stringify(body)}),
+  setCameraConfig: (body: {viewport_width?: number; viewport_height?: number; camera_width?: number; camera_height?: number}) =>
+    req<{status:string; viewport:{width:number;height:number;aspect:number}; camera:{width:number;height:number;aspect:number}; aspect_matches:boolean; persisted:boolean}>('/config/camera', {method:'PATCH', body:JSON.stringify(body)}),
   upsertKiosk:   (k: KioskConfig)      => req('/config/kiosk', {method:'PUT',body:JSON.stringify(k)}),
   getDevices:    ()                    => req<DeviceConfig[]>('/config/devices'),
   upsertDevice:  (d: DeviceConfig)     => req('/config/device', {method:'PUT',body:JSON.stringify(d)}),
   deleteDevice:  (alias: string)       => req(`/config/device/${encodeURIComponent(alias)}`, {method:'DELETE'}),
+  visionTestCapture: (capture_type: 'screen'|'raw') =>
+    req<VisionCapture>('/vision-test/capture', {method:'POST', body:JSON.stringify({capture_type})}, 45_000),
+  visionTestUpload: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return req<VisionCapture>('/vision-test/upload', {method:'POST', body:form, headers:{}}, 30_000);
+  },
+  visionTestAnalyze: (body: {filename:string; expected_screen?:string; use_claude?:boolean}) =>
+    req<VisionAnalysis>('/vision-test/analyze', {method:'POST', body:JSON.stringify(body)}, 90_000),
   getRobots:   ()                  => req<{mode:string;robots:Robot[]}>('/robots'),
   getRobotHealth: (capture = true) => req<RobotHealth>(`/robot/health?capture=${capture}`, undefined, 40_000),
   robotTestCall:  (payload: {method: string; path: string; body?: unknown; timeout?: number; target?: 'agv'|'arm'}) =>
@@ -170,6 +181,39 @@ export type RobotHealth = {
   error?: string;
   components: Record<'robot' | 'base' | 'camera', RobotComponent>;
   checked_at?: number;
+};
+
+export type VisionCapture = {
+  status: string; capture_type: string; filename: string; image_url: string;
+  width: number|null; height: number|null; aspect: number|null;
+  bytes: number; elapsed_ms: number; controller: string; cmd_id: string;
+};
+
+export type VisionRect = { bbox: [number,number,number,number]; center: [number,number]; hint: string };
+
+export type VisionPhashRow = { screen_id: string; app_id: string; distance: number; is_dynamic: boolean };
+
+export type VisionClaudeElement = {
+  id: string; label: string; type: string;
+  center: [number,number]; bbox?: number[]; confidence?: number;
+};
+
+export type VisionAnalysis = {
+  status: string; filename: string; width: number|null; height: number|null; current_hash: string;
+  tier1: {
+    verdict: 'match'|'no_match'|'inconclusive'|'no_reference';
+    detail: string;
+    best: VisionPhashRow|null;
+    ranking: VisionPhashRow[];
+    expected_screen: string;
+    expected_distance: number|null;
+    match_threshold: number;
+    mismatch_threshold: number;
+  };
+  opencv: { count: number; rects: VisionRect[]; error: string };
+  ocr: { available: boolean; text: string; error: string };
+  claude: { screen_id?: string; description?: string; elements?: VisionClaudeElement[]; error?: string } | null;
+  recommendation: string;
 };
 
 export type RobotTestResult = {
