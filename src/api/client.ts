@@ -211,9 +211,19 @@ export type VisionAnalysis = {
     mismatch_threshold: number;
   };
   opencv: { count: number; rects: VisionRect[]; error: string };
-  ocr: { available: boolean; text: string; error: string };
+  ocr: VisionOcr;
+  enhanced: VisionEnhanced | null;
   claude: { screen_id?: string; description?: string; elements?: VisionClaudeElement[]; error?: string } | null;
   recommendation: string;
+};
+
+export type VisionOcr = { available: boolean; text: string; error: string; engine?: string };
+
+export type VisionEnhanced = {
+  applied: boolean; filename: string; image_url: string;
+  width: number|null; height: number|null; pipeline: string;
+  ocr: VisionOcr; opencv_count: number;
+  tier1_best: { screen_id: string; distance: number } | null;
 };
 
 export type RobotTestResult = {

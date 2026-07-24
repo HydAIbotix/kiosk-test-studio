@@ -280,21 +280,61 @@ export default function CameraVisionTest() {
             )}
           </div>
 
-          {/* OCR text */}
+          {/* OCR text — raw frame */}
           <div style={card}>
             <p style={h3}>Text legibility · OCR (0 LLM)</p>
+            <p style={sub}>
+              Tesseract read of the raw frame.
+              {analysis.ocr.engine ? ` Engine: ${analysis.ocr.engine}.` : ''}
+              {' '}The enhanced-frame OCR below shows whether local preprocessing recovers more text.
+            </p>
             {!analysis.ocr.available
-              ? <p style={{ color: 'var(--muted)', fontSize: 12.5 }}>
-                  pytesseract is not installed on the backend — OCR skipped. (Claude vision still reads text.)
-                </p>
+              ? <p style={{ color: 'var(--amber, #f59e0b)', fontSize: 12.5 }}>⚠ {analysis.ocr.error}</p>
               : analysis.ocr.error
                 ? <p style={{ color: 'var(--red)', fontSize: 12.5 }}>{analysis.ocr.error}</p>
                 : <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--text)',
                                 background: 'var(--surface2)', border: '1px solid var(--border)',
                                 borderRadius: 6, padding: 12, maxHeight: 240, overflow: 'auto', margin: 0 }}>
-                    {analysis.ocr.text || '(no text extracted)'}
+                    {analysis.ocr.text || '(no text extracted from the raw frame — see enhanced below)'}
                   </pre>}
           </div>
+
+          {/* Enhanced frame — local OpenCV preprocessing to help the cheap tiers */}
+          {analysis.enhanced && (
+            <div style={card}>
+              <p style={h3}>Image enhancement · OpenCV preprocessing (0 LLM)</p>
+              <p style={sub}>
+                Local pipeline: <code>{analysis.enhanced.pipeline}</code>. A camera photo is soft,
+                low-res and glare-y; this recovers legibility for OCR/edge detection. It does NOT fix
+                Tier-1 aHash (that needs camera-domain references), and coordinates always come from the
+                app_map — enhancement is a legibility aid, not part of the tap path.
+              </p>
+              <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+                <div style={{ flex: '1 1 380px', minWidth: 280, border: '1px solid var(--border)',
+                              borderRadius: 8, overflow: 'hidden', background: '#000', alignSelf: 'flex-start' }}>
+                  <img src={analysis.enhanced.image_url} alt="enhanced frame"
+                       style={{ display: 'block', width: '100%', height: 'auto' }} />
+                </div>
+                <div style={{ flex: '1 1 320px', minWidth: 280, fontSize: 12.5 }}>
+                  <p style={{ margin: '0 0 8px', color: 'var(--muted)' }}>
+                    OpenCV boundaries on enhanced: <b style={{ color: 'var(--text)' }}>{analysis.enhanced.opencv_count}</b>
+                    {analysis.enhanced.tier1_best &&
+                      <> · nearest hash: <b style={{ color: 'var(--text)' }}>{analysis.enhanced.tier1_best.screen_id}</b> (d={analysis.enhanced.tier1_best.distance})</>}
+                  </p>
+                  <p style={{ margin: '0 0 6px', color: 'var(--muted)' }}>OCR (enhanced):</p>
+                  {!analysis.enhanced.ocr.available
+                    ? <p style={{ color: 'var(--amber, #f59e0b)' }}>⚠ {analysis.enhanced.ocr.error}</p>
+                    : analysis.enhanced.ocr.error
+                      ? <p style={{ color: 'var(--red)' }}>{analysis.enhanced.ocr.error}</p>
+                      : <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--text)',
+                                      background: 'var(--surface2)', border: '1px solid var(--border)',
+                                      borderRadius: 6, padding: 12, maxHeight: 220, overflow: 'auto', margin: 0 }}>
+                          {analysis.enhanced.ocr.text || '(still no text — frame too blurry/low-res; improve capture focus, lighting & resolution)'}
+                        </pre>}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Claude elements */}
           {analysis.claude && (
