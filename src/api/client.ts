@@ -67,6 +67,13 @@ export const api = {
   },
   visionTestAnalyze: (body: {filename:string; expected_screen?:string; use_claude?:boolean}) =>
     req<VisionAnalysis>('/vision-test/analyze', {method:'POST', body:JSON.stringify(body)}, 90_000),
+  visionTestSaveReference: (screen_id: string, opts: {filename?: string; capture_type?: 'screen'|'raw'} = {}) =>
+    req<VisionSaveReference>('/vision-test/save-reference',
+      {method:'POST', body:JSON.stringify({screen_id, capture_type: opts.capture_type ?? 'screen', filename: opts.filename})}, 45_000),
+  visionTestReferences: () =>
+    req<VisionReferenceList>('/vision-test/references'),
+  visionTestDeleteReference: (filename: string) =>
+    req<{status:string; deleted:string}>(`/vision-test/reference/${encodeURIComponent(filename)}`, {method:'DELETE'}),
   getRobots:   ()                  => req<{mode:string;robots:Robot[]}>('/robots'),
   getRobotHealth: (capture = true) => req<RobotHealth>(`/robot/health?capture=${capture}`, undefined, 40_000),
   robotTestCall:  (payload: {method: string; path: string; body?: unknown; timeout?: number; target?: 'agv'|'arm'}) =>
@@ -198,8 +205,23 @@ export type VisionClaudeElement = {
   center: [number,number]; bbox?: number[]; confidence?: number;
 };
 
+export type VisionTemplateRow = { screen_id: string; score: number };
+export type VisionTemplateMatch = {
+  method?: string;
+  success?: boolean | null;
+  best?: VisionTemplateRow | null;
+  score?: number | null;
+  ranking?: VisionTemplateRow[];
+  reference_count?: number;
+  reference_dir?: string;
+  threshold?: number;
+  margin?: number;
+  error?: string;
+};
+
 export type VisionAnalysis = {
   status: string; filename: string; width: number|null; height: number|null; current_hash: string;
+  template_match?: VisionTemplateMatch | null;
   tier1: {
     verdict: 'match'|'no_match'|'inconclusive'|'no_reference';
     detail: string;
@@ -216,6 +238,17 @@ export type VisionAnalysis = {
   claude: { screen_id?: string; description?: string; elements?: VisionClaudeElement[]; error?: string } | null;
   recommendation: string;
 };
+
+export type VisionSaveReference = {
+  status: string; screen_id: string; filename: string; path: string; image_url: string;
+  width: number|null; height: number|null; bytes: number; capture_type: string;
+  self_score: number|null; controller: string;
+};
+export type VisionReferenceItem = {
+  screen_id: string; filename: string; image_url: string;
+  width: number|null; height: number|null; bytes: number;
+};
+export type VisionReferenceList = { status: string; dir: string; count: number; references: VisionReferenceItem[] };
 
 export type VisionOcr = { available: boolean; text: string; error: string; engine?: string };
 

@@ -406,7 +406,7 @@ const ROBOT_ENDPOINTS: Endpoint[] = [
     desc: 'Immediately stop arm motion. Use with /arm/command {action:"home"} to recover from an error state.',
     fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-031' }] },
   { group: 'Arm', target: 'arm', method: 'GET', path: '/arm/state', title: 'Arm state',
-    desc: 'Current arm state + last cmd_id. Carries click_result / card_image after those ops. Values: idle | moving | holding_card | error.', fields: [] },
+    desc: 'Current arm state + last cmd_id. Carries click_result / card_image after those ops. Values: idle | ready | moving | holding_card | error (the physical arm reports "ready" when idle-and-available).', fields: [] },
   { group: 'Arm', target: 'arm', method: 'POST', path: '/card/pick', title: 'Pick card',
     desc: 'Pick the credit card from its holder on the robot. Arm then holds the card (state holding_card); /arm/state includes card_image.',
     fields: [{ key: 'cmd_id', label: 'cmd_id', kind: 'text', def: 'c-040' }] },

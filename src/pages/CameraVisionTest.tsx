@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { api, type VisionCapture, type VisionAnalysis, type AppMap } from '../api/client';
+import { api, type VisionCapture, type VisionAnalysis, type AppMap, type VisionReferenceItem } from '../api/client';
 
 /**
  * Camera Vision Test — a self-contained diagnostic page to answer one question:
@@ -53,8 +53,15 @@ export default function CameraVisionTest() {
   const [expected, setExpected]   = useState('');
   const [show, setShow] = useState<{ opencv: boolean; claude: boolean }>({ opencv: true, claude: true });
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const [refs, setRefs] = useState<VisionReferenceItem[]>([]);
+  const [refDir, setRefDir] = useState('');
+  const [refScreen, setRefScreen] = useState('');
+  const [refMsg, setRefMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  useEffect(() => { api.getAppMap().then(setAppMap).catch(() => {}); }, []);
+  const loadRefs = () =>
+    api.visionTestReferences().then(r => { setRefs(r.references); setRefDir(r.dir); }).catch(() => {});
+
+  useEffect(() => { api.getAppMap().then(setAppMap).catch(() => {}); loadRefs(); }, []);
 
   const screenIds = useMemo(
     () => Object.keys(appMap?.screens ?? {}).sort(),
@@ -87,6 +94,28 @@ export default function CameraVisionTest() {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(''); }
   };
+
+  const doSaveReference = async () => {
+    const sid = (refScreen || expected).trim();
+    if (!sid) { setRefMsg({ ok: false, text: 'Pick or type a screen id first' }); return; }
+    if (!capture) { setRefMsg({ ok: false, text: 'Capture a frame first' }); return; }
+    setBusy('save-ref'); setRefMsg(null);
+    try {
+      const r = await api.visionTestSaveReference(sid, { filename: capture.filename });
+      setRefMsg({ ok: true, text: `Saved ${r.filename} (${r.width}×${r.height}, self-score ${r.self_score ?? 'n/a'})` });
+      loadRefs();
+    } catch (e) { setRefMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+    finally { setBusy(''); }
+  };
+
+  const doDeleteRef = async (filename: string) => {
+    try { await api.visionTestDeleteReference(filename); loadRefs(); }
+    catch (e) { setRefMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+  };
+
+  // When template matching already identified the screen (0 LLM), the fallback methods (aHash,
+  // OCR, enhancement) are unnecessary noise — hide them and show only the template-match result.
+  const templateOk = analysis?.template_match?.success === true;
 
   // Natural (server) image dimensions used for overlay scaling; analysis reports them.
   const imgW = analysis?.width ?? capture?.width ?? 0;
@@ -220,10 +249,54 @@ export default function CameraVisionTest() {
         </div>
       )}
 
+      {/* ── Reference library (camera-domain Tier-1 templates, 0 LLM) ─── */}
+      <div style={card}>
+        <p style={h3}>Reference template library · Tier-1 screen identity (0 LLM)</p>
+        <p style={sub}>
+          Save the captured frame as a screen's reference (<code>&lt;screen_id&gt;.png</code>). Template
+          matching compares live camera frames against these — build one per screen for 0-LLM screen ID.
+          To build the library: navigate the robot to a screen, capture (type=screen), then save it here.
+          Folder: <code>{refDir || '—'}</code>.
+        </p>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          <input list="ref-screen-ids" value={refScreen} onChange={e => setRefScreen(e.target.value)}
+                 placeholder={expected || 'screen id (e.g. login)'}
+                 style={{ padding: '7px 9px', borderRadius: 6, background: 'var(--surface2)', color: 'var(--text)',
+                          border: '1px solid var(--border)', fontSize: 12.5, minWidth: 200 }} />
+          <datalist id="ref-screen-ids">{screenIds.map(s => <option key={s} value={s} />)}</datalist>
+          <button style={btn('primary', busy === 'save-ref' || !capture)} disabled={busy === 'save-ref' || !capture}
+                  onClick={doSaveReference}>
+            {busy === 'save-ref' ? 'Saving…' : '💾 Save captured frame as reference'}
+          </button>
+          {!capture && <span style={{ color: 'var(--muted)', fontSize: 12 }}>capture a frame first</span>}
+        </div>
+        {refMsg && <p style={{ color: refMsg.ok ? 'var(--green)' : 'var(--red)', fontSize: 12.5, margin: '0 0 10px' }}>
+          {refMsg.ok ? '✓ ' : '✗ '}{refMsg.text}</p>}
+        {refs.length === 0
+          ? <p style={{ color: 'var(--muted)', fontSize: 12.5, margin: 0 }}>No references saved yet.</p>
+          : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+            {refs.map(r => (
+              <div key={r.filename} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8, width: 150 }}>
+                <img src={r.image_url} alt={r.screen_id}
+                     style={{ display: 'block', width: '100%', height: 80, objectFit: 'cover', borderRadius: 4, background: '#000' }} />
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', marginTop: 6, wordBreak: 'break-all' }}>{r.screen_id}</div>
+                <div style={{ fontSize: 11, color: 'var(--muted)' }}>{r.width}×{r.height}</div>
+                <button style={{ ...btn('ghost'), padding: '3px 8px', fontSize: 11, marginTop: 6 }}
+                        onClick={() => doDeleteRef(r.filename)}>Delete</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* ── 3. Results ──────────────────────────────────────────────── */}
       {analysis && (
         <>
-          {/* Recommendation banner */}
+          {/* Recommendation banner — only when template matching did NOT already identify the screen.
+              When template matching succeeded, the template-match card below is the whole story; the
+              aHash-based verdict here would just be confusing ("NO Tier-1 match" despite a match). */}
+          {!templateOk && (
           <div style={{ ...card, borderColor: VERDICT_COLOR[analysis.tier1.verdict] }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
               <span style={{ width: 11, height: 11, borderRadius: '50%', background: VERDICT_COLOR[analysis.tier1.verdict] }} />
@@ -234,8 +307,69 @@ export default function CameraVisionTest() {
             <p style={{ ...sub, marginBottom: 8 }}>{analysis.tier1.detail}</p>
             <p style={{ fontSize: 12.5, color: 'var(--text)', lineHeight: 1.55, margin: 0 }}>{analysis.recommendation}</p>
           </div>
+          )}
 
-          {/* Tier-1 phash ranking */}
+          {/* Tier-1 · Template matching (primary real-robot screen identifier) */}
+          {analysis.template_match && (() => {
+            const tmm = analysis.template_match!;
+            const tColor = tmm.success === true ? 'var(--green)'
+                         : tmm.success === false ? 'var(--red)' : 'var(--muted)';
+            const tLabel = tmm.success === true ? 'TEMPLATE MATCH - 0-LLM screen identity'
+                         : tmm.success === false ? 'MISMATCH — a different screen scored higher'
+                         : 'INCONCLUSIVE — Claude vision would confirm';
+            return (
+              <div style={{ ...card, borderColor: tColor }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                  <span style={{ width: 11, height: 11, borderRadius: '50%', background: tColor }} />
+                  <span style={{ fontWeight: 700, fontSize: 14, color: tColor }}>{tLabel}</span>
+                </div>
+                <p style={h3}>Tier-1 · Template matching · normalized cross-correlation (0 LLM)</p>
+                <p style={sub}>
+                  TM_CCOEFF_NORMED peak score (−1…1, higher = more similar) of this frame vs each screen's
+                  reference. Match ≥ {tmm.threshold}, must beat runner-up by ≥ {tmm.margin}. This is robust
+                  to the camera↔browser gap, unlike aHash below. References: {tmm.reference_count ?? 0}
+                  {tmm.reference_dir ? ` (override dir: ${tmm.reference_dir})` : ''}.
+                </p>
+                {tmm.error
+                  ? <p style={{ color: 'var(--red)', fontSize: 12.5 }}>{tmm.error}</p>
+                  : (tmm.ranking && tmm.ranking.length > 0)
+                  ? (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                    <thead>
+                      <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
+                        <th style={{ padding: '4px 8px' }}>#</th>
+                        <th style={{ padding: '4px 8px' }}>Screen</th>
+                        <th style={{ padding: '4px 8px' }}>Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tmm.ranking.map((r, i) => {
+                        const isBest = i === 0;
+                        const good = (r.score ?? -1) >= (tmm.threshold ?? 0.55);
+                        return (
+                          <tr key={r.screen_id} style={{ borderTop: '1px solid var(--border)',
+                                background: isBest ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : undefined }}>
+                            <td style={{ padding: '5px 8px', color: 'var(--muted)' }}>{i + 1}</td>
+                            <td style={{ padding: '5px 8px', color: 'var(--text)', fontWeight: isBest ? 700 : 400 }}>{r.screen_id}</td>
+                            <td style={{ padding: '5px 8px', fontWeight: 700,
+                                  color: good ? 'var(--green)' : (isBest ? 'var(--red)' : 'var(--muted)') }}>
+                              {r.score?.toFixed(4)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>)
+                  : <p style={{ color: 'var(--muted)', fontSize: 12.5 }}>
+                      No reference templates — set a template folder (template_ref_dir) or explore the app first.
+                    </p>}
+              </div>
+            );
+          })()}
+
+          {/* Fallback methods (aHash, OCR, enhancement) — only shown when template matching did NOT
+              identify the screen. When it did, these are unnecessary and were hidden per operator request. */}
+          {!templateOk && (
           <div style={card}>
             <p style={h3}>Tier-1 · Perceptual-hash screen match (0 LLM)</p>
             <p style={sub}>
@@ -279,8 +413,10 @@ export default function CameraVisionTest() {
               </table>
             )}
           </div>
+          )}
 
           {/* OCR text — raw frame */}
+          {!templateOk && (
           <div style={card}>
             <p style={h3}>Text legibility · OCR (0 LLM)</p>
             <p style={sub}>
@@ -298,9 +434,10 @@ export default function CameraVisionTest() {
                     {analysis.ocr.text || '(no text extracted from the raw frame — see enhanced below)'}
                   </pre>}
           </div>
+          )}
 
           {/* Enhanced frame — local OpenCV preprocessing to help the cheap tiers */}
-          {analysis.enhanced && (
+          {!templateOk && analysis.enhanced && (
             <div style={card}>
               <p style={h3}>Image enhancement · OpenCV preprocessing (0 LLM)</p>
               <p style={sub}>
