@@ -114,6 +114,7 @@ export type StepResult = {
   step: string; success: boolean; method?: string;
   note?: string; expected_screen?: string; actual_screen?: string;
   expected_text?: string; observation?: string;
+  screenshot_before?: string;
   screenshot_after?: string;
 };
 
