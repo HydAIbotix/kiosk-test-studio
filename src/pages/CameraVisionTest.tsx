@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { api, type VisionCapture, type VisionAnalysis, type AppMap, type VisionReferenceItem } from '../api/client';
+import { api, type VisionCapture, type VisionAnalysis, type AppMap, type VisionReferenceItem,
+         type VisionElementCoords } from '../api/client';
 
 /**
  * Camera Vision Test — a self-contained diagnostic page to answer one question:
@@ -51,7 +52,10 @@ export default function CameraVisionTest() {
   const [error,    setError]    = useState('');
   const [useClaude, setUseClaude] = useState(false);
   const [expected, setExpected]   = useState('');
-  const [show, setShow] = useState<{ opencv: boolean; claude: boolean }>({ opencv: true, claude: true });
+  const [show, setShow] = useState<{ opencv: boolean; claude: boolean; coords: boolean }>({ opencv: true, claude: true, coords: true });
+  const [coords, setCoords]         = useState<VisionElementCoords | null>(null);
+  const [coordScreen, setCoordScreen] = useState('');
+  const [coordBusy, setCoordBusy]   = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [refs, setRefs] = useState<VisionReferenceItem[]>([]);
   const [refDir, setRefDir] = useState('');
@@ -67,6 +71,24 @@ export default function CameraVisionTest() {
     () => Object.keys(appMap?.screens ?? {}).sort(),
     [appMap],
   );
+
+  // Seed the converted-coordinate view from each fresh analysis (the auto-resolved screen); a new
+  // capture with no analysis clears it so stale coords from a previous frame don't linger.
+  useEffect(() => {
+    const ec = analysis?.element_coords ?? null;
+    setCoords(ec);
+    setCoordScreen(ec?.screen_id ?? '');
+  }, [analysis, capture]);
+
+  // Switch which screen's element coordinates to inspect (fast 0-LLM server conversion).
+  const changeCoordScreen = async (sid: string) => {
+    setCoordScreen(sid);
+    if (!capture || !sid) return;
+    setCoordBusy(true); setError('');
+    try { setCoords((await api.visionTestElementCoords(capture.filename, sid)).element_coords); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setCoordBusy(false); }
+  };
 
   const doCapture = async (kind: 'screen' | 'raw') => {
     setBusy(kind); setError(''); setAnalysis(null);
@@ -225,6 +247,25 @@ export default function CameraVisionTest() {
                   border: '2px solid #f472b6', background: 'rgba(244,114,182,0.35)',
                 }} />
               ))}
+              {/* Converted app_map element centers — the (u,v) sent to the Robotics Click API */}
+              {show.coords && coords && imgW > 0 && imgH > 0 && coords.elements.map((el, i) => (
+                <div key={`k${i}`} title={`${el.id} → click (${el.center_camera[0]}, ${el.center_camera[1]})`}
+                  style={{
+                    position: 'absolute',
+                    left: `${(el.center_camera[0] / imgW) * 100}%`,
+                    top:  `${(el.center_camera[1] / imgH) * 100}%`,
+                    transform: 'translate(-50%, -50%)',
+                    width: 16, height: 16,
+                  }}>
+                  <div style={{ position: 'absolute', left: '50%', top: 0, width: 2, height: '100%',
+                                background: '#22c55e', transform: 'translateX(-50%)' }} />
+                  <div style={{ position: 'absolute', top: '50%', left: 0, height: 2, width: '100%',
+                                background: '#22c55e', transform: 'translateY(-50%)' }} />
+                  <div style={{ position: 'absolute', left: '50%', top: '50%', width: 5, height: 5,
+                                borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
+                                transform: 'translate(-50%, -50%)' }} />
+                </div>
+              ))}
             </div>
 
             {/* Legend / toggles */}
@@ -235,6 +276,16 @@ export default function CameraVisionTest() {
                   <span style={{ width: 14, height: 3, background: '#22d3ee', display: 'inline-block' }} />
                   OpenCV boundaries — <b>{analysis.opencv.count}</b> box{analysis.opencv.count === 1 ? '' : 'es'}
                 </label>
+                {coords && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={show.coords} onChange={e => setShow(s => ({ ...s, coords: e.target.checked }))} />
+                    <span style={{ width: 12, height: 12, position: 'relative', display: 'inline-block' }}>
+                      <span style={{ position: 'absolute', left: '50%', top: 0, width: 2, height: '100%', background: '#22c55e', transform: 'translateX(-50%)' }} />
+                      <span style={{ position: 'absolute', top: '50%', left: 0, height: 2, width: '100%', background: '#22c55e', transform: 'translateY(-50%)' }} />
+                    </span>
+                    Click coordinates ({coords.screen_id}) — <b>{coords.elements.length}</b>
+                  </label>
+                )}
                 {analysis.claude?.elements && (
                   <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
                     <input type="checkbox" checked={show.claude} onChange={e => setShow(s => ({ ...s, claude: e.target.checked }))} />
@@ -289,6 +340,78 @@ export default function CameraVisionTest() {
           </div>
         )}
       </div>
+
+      {/* ── UI element click coordinates (the (u,v) sent to the Robotics Click API) ── */}
+      {capture && screenIds.length > 0 && (
+        <div style={{ ...card, borderColor: 'var(--green)' }}>
+          <p style={h3}>UI element click coordinates · exact pixels sent to the Robotics Click API</p>
+          <p style={sub}>
+            For every element on the selected screen, the center pixel <b>(u,&nbsp;v)</b> in <i>this</i>
+            {' '}camera frame that the robot taps — computed with the same conversion the live runtime
+            uses: app_map viewport center → viewport→camera scale → per-axis affine calibration. These
+            are the coordinates already calculated and sent during a real run.
+            {coords && <> Frame&nbsp;
+              {coords.camera_width}×{coords.camera_height}px · explored viewport&nbsp;
+              {coords.viewport_width}×{coords.viewport_height}px · vertical calibration&nbsp;
+              ay={coords.calibration.ay}, by={coords.calibration.by}&nbsp;
+              (<b style={{ color: coords.calibration.source === 'auto' ? 'var(--green)' : 'var(--muted)' }}>
+                {coords.calibration.source === 'auto' ? 'self-calibrated from this login frame' : 'static fallback'}
+              </b>).</>}
+          </p>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--muted)' }}>
+              Screen:
+              <select value={coordScreen} onChange={e => changeCoordScreen(e.target.value)}
+                      style={{ padding: '5px 8px', borderRadius: 6, background: 'var(--surface2)',
+                               color: 'var(--text)', border: '1px solid var(--border)', fontSize: 12 }}>
+                <option value="">— select a screen —</option>
+                {screenIds.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            {coordBusy && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Converting…</span>}
+            {coords && <span style={{ fontSize: 12, color: 'var(--muted)' }}>resolved via: <b style={{ color: 'var(--text)' }}>{coords.source || '—'}</b></span>}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--text)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={show.coords} onChange={e => setShow(s => ({ ...s, coords: e.target.checked }))} />
+              Show markers on frame above
+            </label>
+          </div>
+          {!coords
+            ? <p style={{ color: 'var(--muted)', fontSize: 12.5, margin: 0 }}>
+                Select a screen above to convert its element coordinates for this frame.
+              </p>
+            : coords.elements.length === 0
+            ? <p style={{ color: 'var(--muted)', fontSize: 12.5, margin: 0 }}>This screen has no elements with coordinates in the app map.</p>
+            : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 520 }}>
+                <thead>
+                  <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
+                    <th style={{ padding: '4px 8px' }}>Element</th>
+                    <th style={{ padding: '4px 8px' }}>Type</th>
+                    <th style={{ padding: '4px 8px' }}>Label</th>
+                    <th style={{ padding: '4px 8px' }}>Viewport center</th>
+                    <th style={{ padding: '4px 8px' }}>→ Click (u, v)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {coords.elements.map(el => (
+                    <tr key={el.id} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ padding: '5px 8px', color: 'var(--text)' }}>{el.id}</td>
+                      <td style={{ padding: '5px 8px', color: 'var(--muted)' }}>{el.type}</td>
+                      <td style={{ padding: '5px 8px', color: 'var(--muted)' }}>{el.label}</td>
+                      <td style={{ padding: '5px 8px', color: 'var(--muted)' }}>{el.center_viewport[0]}, {el.center_viewport[1]}</td>
+                      <td style={{ padding: '5px 8px', color: 'var(--green)', fontWeight: 700 }}>
+                        {el.center_camera[0]}, {el.center_camera[1]}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {coords && <p style={{ ...sub, marginTop: 10, marginBottom: 0 }}>{coords.note}</p>}
+        </div>
+      )}
 
       {/* ── 3. Results ──────────────────────────────────────────────── */}
       {analysis && (

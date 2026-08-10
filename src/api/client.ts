@@ -65,8 +65,10 @@ export const api = {
     form.append('file', file);
     return req<VisionCapture>('/vision-test/upload', {method:'POST', body:form, headers:{}}, 30_000);
   },
-  visionTestAnalyze: (body: {filename:string; expected_screen?:string; use_claude?:boolean}) =>
+  visionTestAnalyze: (body: {filename:string; expected_screen?:string; use_claude?:boolean; screen_id?:string}) =>
     req<VisionAnalysis>('/vision-test/analyze', {method:'POST', body:JSON.stringify(body)}, 90_000),
+  visionTestElementCoords: (filename:string, screen_id:string) =>
+    req<VisionElementCoordsResponse>('/vision-test/element-coords', {method:'POST', body:JSON.stringify({filename, screen_id})}, 20_000),
   visionTestSaveReference: (screen_id: string, opts: {filename?: string; capture_type?: 'screen'|'raw'} = {}) =>
     req<VisionSaveReference>('/vision-test/save-reference',
       {method:'POST', body:JSON.stringify({screen_id, capture_type: opts.capture_type ?? 'screen', filename: opts.filename})}, 45_000),
@@ -220,9 +222,31 @@ export type VisionTemplateMatch = {
   error?: string;
 };
 
+export type VisionElementCoord = {
+  id: string; label: string; type: string;
+  center_viewport: [number, number];
+  center_camera: [number, number];
+  bbox_camera?: [number, number, number, number] | null;
+};
+export type VisionElementCoords = {
+  screen_id: string;
+  source: string;                 // requested | expected | template_match | ahash
+  camera_width: number; camera_height: number;
+  viewport_width: number; viewport_height: number;
+  calibration: { ax: number; bx: number; ay: number; by: number;
+                 source?: string; email_cam_frac?: number; password_cam_frac?: number };
+  elements: VisionElementCoord[];
+  note: string;
+};
+export type VisionElementCoordsResponse = {
+  status: string; filename: string; width: number|null; height: number|null;
+  element_coords: VisionElementCoords;
+};
+
 export type VisionAnalysis = {
   status: string; filename: string; width: number|null; height: number|null; current_hash: string;
   template_match?: VisionTemplateMatch | null;
+  element_coords?: VisionElementCoords | null;
   tier1: {
     verdict: 'match'|'no_match'|'inconclusive'|'no_reference';
     detail: string;
