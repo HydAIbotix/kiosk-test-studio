@@ -353,11 +353,27 @@ export default function CameraVisionTest() {
             {coords && <> Frame&nbsp;
               {coords.camera_width}×{coords.camera_height}px · explored viewport&nbsp;
               {coords.viewport_width}×{coords.viewport_height}px · vertical calibration&nbsp;
-              ay={coords.calibration.ay}, by={coords.calibration.by}&nbsp;
-              (<b style={{ color: coords.calibration.source === 'auto' ? 'var(--green)' : 'var(--muted)' }}>
-                {coords.calibration.source === 'auto' ? 'self-calibrated from this login frame' : 'static fallback'}
+              {coords.calibration.source === 'auto-vmap4'
+                ? <>4-anchor piecewise (email · password · Sign&nbsp;In · footer)</>
+                : <>ay={coords.calibration.ay}, by={coords.calibration.by}</>}&nbsp;
+              (<b style={{ color: coords.calibration.source?.startsWith('auto') ? 'var(--green)' : 'var(--muted)' }}>
+                {coords.calibration.source === 'auto-vmap4'
+                  ? 'self-calibrated from this login frame (footer anchored — bottom-row links land on their labels)'
+                  : coords.calibration.source === 'auto'
+                  ? 'self-calibrated from this login frame (2-anchor; footer links extrapolated, may read slightly high)'
+                  : 'static fallback'}
               </b>).</>}
           </p>
+          {coords?.excel_export && (
+            <p style={{ ...sub, marginTop: -4 }}>
+              Auto-saved to&nbsp;
+              <a href={`/api/vision-test/coords-export/${coords.excel_export}`}
+                 style={{ color: 'var(--green)', fontWeight: 600 }} download>
+                {coords.excel_export}
+              </a>
+              &nbsp;in the repo's <code>coordinate_exports/</code> folder (a new file every run).
+            </p>
+          )}
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--muted)' }}>
               Screen:

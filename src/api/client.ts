@@ -234,9 +234,11 @@ export type VisionElementCoords = {
   camera_width: number; camera_height: number;
   viewport_width: number; viewport_height: number;
   calibration: { ax: number; bx: number; ay: number; by: number;
-                 source?: string; email_cam_frac?: number; password_cam_frac?: number };
+                 source?: string; email_cam_frac?: number; password_cam_frac?: number;
+                 signin_cam_frac?: number; footer_cam_frac?: number; knots?: number[][] };
   elements: VisionElementCoord[];
   note: string;
+  excel_export?: string | null;   // filename of the auto-saved .xlsx in coordinate_exports/
 };
 export type VisionElementCoordsResponse = {
   status: string; filename: string; width: number|null; height: number|null;
