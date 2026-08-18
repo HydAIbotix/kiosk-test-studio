@@ -6,7 +6,7 @@ const BLANK_KIOSK: KioskConfig = {
   screen_w_m: 0.4, screen_h_m: 0.3, tag_id: 1,
 };
 
-const BLANK_DEVICE: DeviceConfig = { alias: '', kiosk_id: '', description: '', pos_x: 0, pos_y: 0, pos_theta: 0 };
+const BLANK_DEVICE: DeviceConfig = { alias: '', kiosk_id: '', position_name: '', description: '', pos_x: 0, pos_y: 0, pos_theta: 0 };
 
 // Stable palette for device aliases (cycles if >8 devices)
 const DEVICE_COLORS = ['#6366f1','#f59e0b','#22c55e','#3b82f6','#ec4899','#a855f7','#14b8a6','#f97316'];
@@ -28,7 +28,7 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
   const [exploreMode,  setExplMode]   = useState<string>('claude');
   const [exploreSaving,setExpSaving]  = useState(false);
   const [exploreMsg,   setExploreMsg] = useState('');
-  const [robotForm,    setRobotForm]  = useState({ robot_backend: 'demo', robot_ip: '', robot_port: 8000, agv_url: '', arm_url: '' });
+  const [robotForm,    setRobotForm]  = useState({ robot_backend: 'demo', robot_ip: '', robot_port: 8000, agv_url: '', arm_url: '', agv_home_target: '' });
   const [robotSaving,  setRobotSaving]= useState(false);
   const [robotMsg,     setRobotMsg]   = useState('');
   const [robotRestart, setRobotRestart]= useState(false);
@@ -38,7 +38,7 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
 
   const reload = () => api.getConfig().then(c => {
     setConfig(c);
-    setRobotForm({ robot_backend: c.robot_backend, robot_ip: c.robot_ip, robot_port: c.robot_port, agv_url: c.agv_url || '', arm_url: c.arm_url || '' });
+    setRobotForm({ robot_backend: c.robot_backend, robot_ip: c.robot_ip, robot_port: c.robot_port, agv_url: c.agv_url || '', arm_url: c.arm_url || '', agv_home_target: c.agv_home_target || '' });
     setCardSvc(c.card_service_url || '');
     if (c.kiosks.length > 0) setKiosk(c.kiosks[0]);
   });
@@ -70,6 +70,7 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
         robot_port:    robotForm.robot_port,
         agv_url:       robotForm.agv_url,
         arm_url:       robotForm.arm_url,
+        agv_home_target: robotForm.agv_home_target,
       });
       setRobotMsg('✓ Saved'); setRobotRestart(r.restart_required); reload();
     } catch (e) { setRobotMsg(`Error: ${e instanceof Error ? e.message : String(e)}`); }
@@ -174,6 +175,20 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
               <span style={{ fontSize: 11, color: 'var(--muted)' }}>{hint}</span>
             </div>
           ))}
+          <div>
+            <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>AGV Home Position</label>
+            <input value={robotForm.agv_home_target} disabled={robotForm.robot_backend !== 'real'} placeholder="home-Aug-14-G37"
+              onChange={e => setRobotForm(f => ({ ...f, agv_home_target: e.target.value }))}
+              style={{
+                width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13,
+                fontFamily: 'monospace',
+                background: robotForm.robot_backend === 'real' ? 'var(--bg)' : 'var(--surface)',
+                color: robotForm.robot_backend === 'real' ? 'var(--text)' : 'var(--muted)',
+                cursor: robotForm.robot_backend === 'real' ? 'text' : 'not-allowed',
+                opacity: robotForm.robot_backend === 'real' ? 1 : 0.55,
+              }} />
+            <span style={{ fontSize: 11, color: 'var(--muted)' }}>AGV map name for a "go home" step — <code>/base/goto</code> target. Blank → <code>home</code>.</span>
+          </div>
         </div>
 
         <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
@@ -317,6 +332,14 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
           plans, tags each step with the target device, and the robot moves to that device's position
           before interacting with its touchscreen.
         </p>
+        <p className="text-muted" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.6 }}>
+          Set <strong>AGV position name</strong> to the exact name of this device's dock in the robotics
+          team's AGV map (e.g. <code>kiosk-2-Aug-14-G37</code>) — that string is sent as the
+          <code>/base/goto</code> target. It's decoupled from the Kiosk-ID, so you can rename AGV
+          positions here without re-exploring or breaking any test/plan link. Blank falls back to the
+          Kiosk-ID. The <strong>home</strong> position name (for a "go back home" step) lives on the
+          Robot Setup page.
+        </p>
 
         {/* Existing device table */}
         {allAliases.length > 0 && (
@@ -324,7 +347,7 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
             <table>
               <thead>
                 <tr>
-                  <th>Alias</th><th>Kiosk-ID</th><th>Description</th><th>X (m)</th><th>Y (m)</th><th>θ (°)</th><th></th>
+                  <th>Alias</th><th>Kiosk-ID</th><th>AGV Position</th><th>Description</th><th>X (m)</th><th>Y (m)</th><th>θ (°)</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -335,6 +358,10 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
                       <strong style={{ fontFamily: 'monospace', fontSize: 12, color: deviceColor(d.alias, allAliases) }}>{d.alias}</strong>
                     </td>
                     <td className="monospace" style={{ fontSize: 12, color: d.kiosk_id ? 'var(--accent2)' : 'var(--muted)' }}>{d.kiosk_id || '—'}</td>
+                    <td className="monospace" style={{ fontSize: 12, color: d.position_name ? 'var(--text)' : 'var(--muted)' }}
+                        title={d.position_name ? 'AGV /base/goto target' : 'Falls back to Kiosk-ID'}>
+                      {d.position_name || (d.kiosk_id ? `↳ ${d.kiosk_id}` : '—')}
+                    </td>
                     <td style={{ fontSize: 12 }}>{d.description}</td>
                     <td className="monospace" style={{ fontSize: 12 }}>{d.pos_x.toFixed(2)}</td>
                     <td className="monospace" style={{ fontSize: 12 }}>{d.pos_y.toFixed(2)}</td>
@@ -355,7 +382,7 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
           <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: 'var(--text)' }}>
             {device.alias && allAliases.includes(device.alias) ? `Edit — ${device.alias}` : 'Add Device'}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.4fr', gap: 10, marginBottom: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Alias <span style={{ color: 'var(--red)' }}>*</span></label>
               <input className="form-input" value={device.alias}
@@ -367,6 +394,18 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
               <input className="form-input" value={device.kiosk_id}
                 onChange={e => setDevice(d => ({ ...d, kiosk_id: e.target.value }))}
                 placeholder="KIOSK-ID-1" style={{ fontFamily: 'monospace' }} />
+              <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 3 }}>
+                The join key — do NOT rename to match the AGV map.
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">AGV position name</label>
+              <input className="form-input" value={device.position_name ?? ''}
+                onChange={e => setDevice(d => ({ ...d, position_name: e.target.value }))}
+                placeholder="kiosk-2-Aug-14-G37" style={{ fontFamily: 'monospace' }} />
+              <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 3 }}>
+                Sent as the <code>/base/goto</code> target. Leave blank to use the Kiosk-ID.
+              </div>
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Full Name / Description</label>

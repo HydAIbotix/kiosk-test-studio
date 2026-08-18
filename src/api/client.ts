@@ -50,8 +50,8 @@ export const api = {
     return req<{imported:number;new:number}>('/test-cases/upload', { method: 'POST', body: form, headers: {} }, 30_000);
   },
   getConfig:     ()                    => req<Config>('/config'),
-  setRobotConn:  (body: {robot_backend: string; robot_ip?: string; robot_port?: number; agv_url?: string; arm_url?: string}) =>
-    req<{status:string; robot_backend:string; robot_ip:string; robot_port:number; agv_url:string; arm_url:string; agv_base:string; arm_base:string; robot_url:string; persisted:boolean; restart_required:boolean}>('/config/robot', {method:'PATCH', body:JSON.stringify(body)}),
+  setRobotConn:  (body: {robot_backend: string; robot_ip?: string; robot_port?: number; agv_url?: string; arm_url?: string; agv_home_target?: string}) =>
+    req<{status:string; robot_backend:string; robot_ip:string; robot_port:number; agv_url:string; arm_url:string; agv_base:string; arm_base:string; robot_url:string; agv_home_target:string; persisted:boolean; restart_required:boolean}>('/config/robot', {method:'PATCH', body:JSON.stringify(body)}),
   setCameraConfig: (body: {viewport_width?: number; viewport_height?: number; camera_width?: number; camera_height?: number}) =>
     req<{status:string; viewport:{width:number;height:number;aspect:number}; camera:{width:number;height:number;aspect:number}; aspect_matches:boolean; persisted:boolean}>('/config/camera', {method:'PATCH', body:JSON.stringify(body)}),
   upsertKiosk:   (k: KioskConfig)      => req('/config/kiosk', {method:'PUT',body:JSON.stringify(k)}),
@@ -146,15 +146,17 @@ export type TestCase = {
 };
 
 export type DeviceConfig = {
-  alias: string;        // e.g. "TVM"
-  kiosk_id: string;     // linked Kiosk-ID (e.g. "KIOSK-ID-1")
-  description: string;  // e.g. "Ticket Vending Machine"
+  alias: string;          // e.g. "TVM"
+  kiosk_id: string;       // linked Kiosk-ID (e.g. "KIOSK-ID-1") — the JOIN KEY (don't rename to satisfy the AGV)
+  position_name?: string; // AGV map position name sent as /base/goto target (e.g. "kiosk-2-Aug-14-G37"); blank → falls back to kiosk_id
+  description: string;    // e.g. "Ticket Vending Machine"
   pos_x: number; pos_y: number; pos_theta: number;
 };
 
 export type Config = {
   robot_backend: string; robot_ip: string; robot_port: number; robot_id: string;
   agv_url: string; arm_url: string; agv_base: string; arm_base: string;
+  agv_home_target: string;   // AGV map position name for a "go home" step (e.g. "home-Aug-14-G37")
   exploration_mode: string;
   card_service_url: string;
   viewport: {width:number;height:number}; camera: {width:number;height:number};
