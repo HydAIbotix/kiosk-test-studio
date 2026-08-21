@@ -128,8 +128,12 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
   // The execution backend has a SINGLE source of truth: Configuration → Robot Connection.
   useEffect(() => { api.getConfig().then(c => setBackend(c.robot_backend)).catch(() => {}); }, []);
 
-  // Selection is managed in Test Intake and persisted in localStorage
-  const selectedIds = new Set<string>(api.getSelectedTcs());
+  // Selection AND run order are persisted in localStorage (`selected_tcs` is an ordered array).
+  // Test Intake decides WHICH tests; this page decides the ORDER they execute in — the suite runs
+  // top-to-bottom in exactly this order (the backend honors the id order sent in `filter_tc`).
+  const [orderedIds, setOrderedIds] = useState<string[]>(() => api.getSelectedTcs());
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const selectedIds = new Set<string>(orderedIds);
 
   // Load TC details from API so we can display summaries and resolve plans
   const [availableTcs, setAvailable] = useState<TestCase[]>([]);
@@ -160,8 +164,28 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableTcs]);
 
-  const selectedTcs = availableTcs.filter(tc => selectedIds.has(tc.test_id));
-  const filterTc    = [...selectedIds].join(',') || undefined;
+  // Render + run in the operator's chosen order (orderedIds), NOT availableTcs/test_id order.
+  const tcById      = new Map(availableTcs.map(tc => [tc.test_id, tc]));
+  const selectedTcs = orderedIds.map(id => tcById.get(id)).filter((t): t is TestCase => !!t);
+  const filterTc    = orderedIds.join(',') || undefined;
+
+  // Reorder helpers — persist immediately so the chosen order survives navigation and is what runs.
+  const persistOrder = (ids: string[]) => { setOrderedIds(ids); api.saveSelectedTcs(ids); };
+  const moveBy = (idx: number, delta: number) => {
+    const j = idx + delta;
+    if (j < 0 || j >= orderedIds.length) return;
+    const next = orderedIds.slice();
+    [next[idx], next[j]] = [next[j], next[idx]];
+    persistOrder(next);
+  };
+  const dropOn = (targetIdx: number) => {
+    if (dragIdx === null || dragIdx === targetIdx) { setDragIdx(null); return; }
+    const next = orderedIds.slice();
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(targetIdx, 0, moved);
+    persistOrder(next);
+    setDragIdx(null);
+  };
 
   const startRun = async () => {
     setStarting(true); setStatus('');
@@ -218,33 +242,55 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
             </button>
           </div>
           <p className="text-muted" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.5 }}>
-            {selectedIds.size === 0
+            {orderedIds.length === 0
               ? 'No test cases selected — all will run. Go to Test Intake to make a selection.'
-              : `${selectedIds.size} test case${selectedIds.size > 1 ? 's' : ''} queued for this run.`}
+              : `${orderedIds.length} test case${orderedIds.length > 1 ? 's' : ''} queued — they run in the order below.`}
           </p>
 
           {tcLoading && <p className="text-muted" style={{ fontSize: 12 }}>Loading…</p>}
 
           {!tcLoading && selectedTcs.length > 0 && (
-            <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 0', marginBottom: 14 }}>
-              {groupByKiosk(selectedTcs).map(([kid, tcs]) => (
-                <div key={kid}>
-                  {/* Kiosk header — the target kiosk this group of tests executes on */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: 'rgba(99,102,241,0.08)', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0 }}>
-                    <span style={{ fontSize: 13 }}>🖥️</span>
-                    <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, color: 'var(--accent2)', fontFamily: 'monospace' }}>{kid}</span>
-                    <span style={{ fontSize: 10, color: 'var(--muted)' }}>· {tcs.length} test{tcs.length === 1 ? '' : 's'}</span>
-                  </div>
-                  {tcs.map(tc => (
-                    <div key={tc.test_id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 12px 7px 24px', borderBottom: '1px solid var(--border)' }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent2)' }}>{tc.test_id}</div>
-                        <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.4 }}>{tc.summary}</div>
+            <div style={{ border: '1px solid var(--border)', borderRadius: 6, marginBottom: 14, overflow: 'hidden' }}>
+              {/* Run-order header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: 'rgba(99,102,241,0.08)', borderBottom: '1px solid var(--border)' }}>
+                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, color: 'var(--accent2)', fontFamily: 'monospace' }}>RUN ORDER</span>
+                <span style={{ fontSize: 10, color: 'var(--muted)' }}>· drag ≡ or use ↑ ↓ — executes top-to-bottom</span>
+              </div>
+              {/* Reorderable rows — drag-and-drop OR up/down buttons; order is what the suite runs */}
+              <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+                {selectedTcs.map((tc, idx) => (
+                  <div
+                    key={tc.test_id}
+                    draggable
+                    onDragStart={() => setDragIdx(idx)}
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={() => dropOn(idx)}
+                    onDragEnd={() => setDragIdx(null)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px',
+                      borderBottom: '1px solid var(--border)',
+                      background: dragIdx === idx ? 'rgba(99,102,241,0.14)' : 'transparent',
+                      cursor: 'grab',
+                    }}
+                  >
+                    <span title="Drag to reorder" style={{ color: 'var(--muted)', fontSize: 15, userSelect: 'none' }}>≡</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', width: 18, textAlign: 'right', fontFamily: 'monospace' }}>{idx + 1}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent2)' }}>{tc.test_id}</span>
+                        <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 8, background: 'rgba(99,102,241,0.12)', color: 'var(--accent2)', fontFamily: 'monospace' }}>{tc.kiosk_id || 'unassigned'}</span>
                       </div>
+                      <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tc.summary}</div>
                     </div>
-                  ))}
-                </div>
-              ))}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <button className="btn btn-secondary" onClick={() => moveBy(idx, -1)} disabled={idx === 0}
+                        title="Move up" style={{ padding: '0 6px', fontSize: 11, lineHeight: '16px', minWidth: 22 }}>↑</button>
+                      <button className="btn btn-secondary" onClick={() => moveBy(idx, 1)} disabled={idx === selectedTcs.length - 1}
+                        title="Move down" style={{ padding: '0 6px', fontSize: 11, lineHeight: '16px', minWidth: 22 }}>↓</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -255,7 +301,7 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
           </div>
 
           <button className="btn btn-primary" onClick={startRun} disabled={starting}>
-            {starting ? '⏳ Starting…' : `▶ Start Run${selectedIds.size > 0 ? ` (${selectedIds.size} TCs)` : ' (all TCs)'}`}
+            {starting ? '⏳ Starting…' : `▶ Start Run${orderedIds.length > 0 ? ` (${orderedIds.length} TCs)` : ' (all TCs)'}`}
           </button>
 
           {status && (
