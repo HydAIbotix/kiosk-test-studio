@@ -11,13 +11,15 @@ import Execution    from './pages/Execution';
 import LiveMonitor  from './pages/LiveMonitor';
 import Results      from './pages/Results';
 import AutoRepair   from './pages/AutoRepair';
+import AgenticView  from './pages/AgenticView';
 
 type Page =
-  | 'dashboard' | 'explorer' | 'app-map' | 'test-intake'
+  | 'dashboard' | 'agentic-view' | 'explorer' | 'app-map' | 'test-intake'
   | 'configuration' | 'robot-setup' | 'camera-test' | 'execution' | 'monitor' | 'results' | 'auto-repair';
 
 const TITLES: Record<Page, string> = {
   'dashboard':     'Dashboard',
+  'agentic-view':  'Agentic View',
   'explorer':      'App Explorer',
   'app-map':       'App Map',
   'test-intake':   'Test Intake',
@@ -48,6 +50,7 @@ export default function App() {
   return (
     <Layout page={page} onNav={nav} title={TITLES[page]}>
       {page === 'dashboard'     && <Dashboard    onNav={nav} />}
+      {page === 'agentic-view'  && <AgenticView />}
       {page === 'explorer'      && <AppExplorer  onNav={nav} />}
       {page === 'app-map'       && <AppMapPage />}
       {page === 'test-intake'   && <TestIntake onNav={nav} />}

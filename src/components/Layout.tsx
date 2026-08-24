@@ -3,13 +3,16 @@ import type { ReactNode } from 'react';
 import { api } from '../api/client';
 
 type Page =
-  | 'dashboard' | 'explorer' | 'app-map' | 'test-intake'
+  | 'dashboard' | 'agentic-view' | 'explorer' | 'app-map' | 'test-intake'
   | 'configuration' | 'robot-setup' | 'camera-test' | 'execution' | 'monitor' | 'results' | 'auto-repair';
 
 const NAV: { group: string; items: { id: Page; icon: string; label: string }[] }[] = [
   {
     group: 'Overview',
-    items: [{ id: 'dashboard', icon: '⬡', label: 'Dashboard' }],
+    items: [
+      { id: 'dashboard',    icon: '⬡', label: 'Dashboard' },
+      { id: 'agentic-view', icon: '◎', label: 'Agentic View' },
+    ],
   },
   {
     group: 'App Analysis',

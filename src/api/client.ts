@@ -91,11 +91,11 @@ export const api = {
   getTcPlan:      (body: TcPlanInput)         => req<TcPlan>('/tc-plan', {method:'POST', body:JSON.stringify(body)}, 90_000),
   deleteTcPlan:   (test_id: string)           => req(`/tc-plan/${test_id}`, {method:'DELETE'}),
   getRunDefects:  (run_id: string)            => req<Defect[]>(`/runs/${run_id}/defects`),
-  // Auto-Repair (RAG + Claude self-healing)
-  startRepair:     (body: {failure: string; test_id?: string; run_id?: string; apply?: boolean}) =>
-    req<{repair_id: string; status: string}>('/repair', {method: 'POST', body: JSON.stringify(body)}),
+  // Auto-Repair (RAG + Claude self-healing) — repairs run AUTOMATICALLY when a test fails.
+  listRepairs:     ()                         => req<RepairJob[]>('/repair'),
   getRepair:       (id: string)               => req<RepairJob>(`/repair/${id}`),
   openRepairPr:    (id: string)               => req<RepairPrOutcome>(`/repair/${id}/open-pr`, {method: 'POST', body: JSON.stringify({confirm: true})}, 60_000),
+  deleteRepairPr:  (id: string)               => req<RepairPrDeleteOutcome>(`/repair/${id}/delete-pr`, {method: 'POST'}, 60_000),
   buildRepairIndex:()                         => req<{status: string; message?: string}>('/repair/index', {method: 'POST'}),
   getRepairIndex:  ()                         => req<{building: boolean; exists: boolean; message: string; persist_dir: string}>('/repair/index'),
   getExploreConfig: ()                       => req<ExploreConfig>('/explore-config'),
@@ -369,6 +369,9 @@ export type RepairPrOutcome = {
   opened: boolean; url?: string; output?: string;
   pushed?: boolean; created?: boolean; stage?: string;
 };
+export type RepairPrDeleteOutcome = {
+  deleted: boolean; remote_deleted?: boolean; branch?: string; output?: string;
+};
 export type RepairStage = {
   stage?: string;
   status?: 'running' | 'done' | 'warn' | 'failed';
@@ -379,10 +382,12 @@ export type RepairStage = {
   prepared?: boolean; branch?: string; base?: string; remote?: string;   // pr
   commit?: string; title?: string; body?: string; diff?: string;
   opened?: RepairPrOutcome;
+  deleted?: RepairPrDeleteOutcome;
 };
 export type RepairJob = {
   repair_id: string;
   status: 'pending' | 'running' | 'succeeded' | 'completed' | 'failed';
+  auto?: boolean;              // true → auto-triggered by a failed test run
   failure: string; test_id?: string; run_id?: string | null;
   created_at?: string; updated_at?: string; error?: string;
   stages?: Record<string, RepairStage>;

@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { api } from '../api/client';
 import type { RepairJob, RepairStage } from '../api/client';
 
-/** The self-healing arm of defect intelligence: RAG (Chroma + HuggingFace) retrieves the
- *  offending code, Claude proposes one minimal patch, the agent applies it, lints, builds,
- *  and prepares a PR. Every stage streams here live. */
+/** The self-healing arm of defect intelligence. Repairs run AUTOMATICALLY: whenever a test
+ *  fails, the backend fires the Auto-Repair agent — RAG (Chroma + HuggingFace) retrieves the
+ *  offending code, Claude proposes one minimal patch, the agent applies it, type-checks, builds,
+ *  and opens a PR. This page is a live DASHBOARD of those repairs (no manual trigger — the run
+ *  that fails is the trigger). The standalone window popped by Live Monitor reuses the same
+ *  pipeline view for a single repair. */
 
 type StageMeta = { key: string; icon: string; label: string; sub: string };
 const STAGES: StageMeta[] = [
@@ -16,11 +19,6 @@ const STAGES: StageMeta[] = [
   { key: 'build',    icon: '🏗️', label: 'Build',             sub: 'tsc -b + vite build' },
   { key: 'pr',       icon: '🔀', label: 'Raise PR',          sub: 'branch + commit + diff' },
 ];
-
-const DEFAULT_FAILURE =
-  'TC-RPS-001 (RPS login) failed: on the Sign In screen the Sign In button never becomes ' +
-  'enabled, so valid credentials cannot be submitted and the user is stuck on the login page. ' +
-  'Fix the sign-in form gating so a filled email + password lets the user submit and log in.';
 
 type StatusKind = 'pending' | 'running' | 'done' | 'warn' | 'failed';
 
@@ -47,95 +45,80 @@ function mergedStages(job: RepairJob | null): Record<string, RepairStage> {
   return { ...(job.stages || {}), ...(job.result?.stages || {}) };
 }
 
+function relTime(iso?: string): string {
+  if (!iso) return '';
+  const t = Date.parse(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
+  if (Number.isNaN(t)) return '';
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+type IndexState = { building: boolean; exists: boolean; message: string } | null;
+
 export default function AutoRepair({ standaloneRepairId }: { standaloneRepairId?: string } = {}) {
-  const [failure, setFailure]   = useState(DEFAULT_FAILURE);
-  const [testId,  setTestId]    = useState('TC-RPS-001');
-  const [job,     setJob]       = useState<RepairJob | null>(null);
-  const [running, setRunning]   = useState(false);
-  const [error,   setError]     = useState('');
-  const [index,   setIndex]     = useState<{building: boolean; exists: boolean; message: string} | null>(null);
+  const [jobs,  setJobs]  = useState<RepairJob[]>([]);
+  const [error, setError] = useState('');
+  const [index, setIndex] = useState<IndexState>(null);
   const [indexBusy, setIndexBusy] = useState(false);
-  const [prBusy,  setPrBusy]    = useState(false);
-  const [prConfirm, setPrConfirm] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const pollRef = useRef<number | undefined>(undefined);
 
-  const refreshIndex = async () => {
+  const refreshIndex = useCallback(async () => {
     try { setIndex(await api.getRepairIndex()); } catch { /* backend down */ }
-  };
-  useEffect(() => { refreshIndex(); return () => clearInterval(pollRef.current); }, []);
+  }, []);
 
-  const pollJob = (repair_id: string) => {
-    const poll = async () => {
-      try {
-        const j = await api.getRepair(repair_id);
-        setJob(j);
-        if (j.status === 'pending' || j.status === 'running') {
-          pollRef.current = window.setTimeout(poll, 1000);
-        } else {
-          setRunning(false);
-        }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Repair polling failed');
-        setRunning(false);
+  // Data source: a single job in the standalone window, else the full dashboard list.
+  const refresh = useCallback(async () => {
+    try {
+      if (standaloneRepairId) {
+        setJobs([await api.getRepair(standaloneRepairId)]);
+      } else {
+        setJobs(await api.listRepairs());
       }
-    };
-    poll();
-  };
-
-  // Standalone window (?repair=<id>): attach to the already-running auto-repair job and stream it.
-  useEffect(() => {
-    if (standaloneRepairId) { setRunning(true); pollJob(standaloneRepairId); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load repairs');
+    }
   }, [standaloneRepairId]);
 
+  useEffect(() => {
+    refreshIndex();
+    refresh();
+    // Poll continuously: new auto-triggered repairs arrive here, and running ones stream stages.
+    pollRef.current = window.setInterval(refresh, 2500);
+    return () => clearInterval(pollRef.current);
+  }, [refresh, refreshIndex]);
+
+  // Auto-expand the newest repair (and the standalone one) so there's always something to look at.
+  const newestId = jobs[0]?.repair_id;
+  useEffect(() => {
+    const id = standaloneRepairId || newestId;
+    if (id) setExpanded(prev => (prev.size === 0 ? new Set([id]) : prev));
+  }, [standaloneRepairId, newestId]);
+
   const rebuildIndex = async () => {
-    setIndexBusy(true);
+    setIndexBusy(true); setError('');
     try {
       await api.buildRepairIndex();
-      // poll index status until it finishes building
       const tick = async () => {
         const s = await api.getRepairIndex();
         setIndex(s);
         if (!s.building) setIndexBusy(false);
-        else setTimeout(tick, 1500);
+        else window.setTimeout(tick, 1500);
       };
       tick();
     } catch (e) { setError(e instanceof Error ? e.message : 'Index build failed'); setIndexBusy(false); }
   };
 
-  const start = async () => {
-    setError(''); setJob(null); setRunning(true); setPrConfirm(false);
-    try {
-      const { repair_id } = await api.startRepair({ failure, test_id: testId });
-      pollJob(repair_id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not start the repair job');
-      setRunning(false);
-    }
-  };
-
-  const openPr = async () => {
-    if (!job) return;
-    setPrBusy(true); setError('');
-    try {
-      const outcome = await api.openRepairPr(job.repair_id);
-      setJob(await api.getRepair(job.repair_id));
-      if (!outcome.opened) setError(`PR not raised: ${outcome.output || 'see server log'}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Open PR failed');
-    } finally { setPrBusy(false); setPrConfirm(false); }
-  };
-
-  const stages = mergedStages(job);
-  // Determine which stage is "active" (first without a terminal status while running)
-  const firstIncomplete = STAGES.findIndex(s => {
-    const st = stages[s.key]?.status;
-    return st !== 'done' && st !== 'warn';
-  });
-  const done = job && (job.status === 'succeeded' || job.status === 'completed' || job.status === 'failed');
-  const buildStage = stages['build'];
-  const prStage    = stages['pr'];
-  const succeeded  = job?.status === 'succeeded' || (buildStage?.ok === true);
+  const toggle = (id: string) =>
+    setExpanded(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
 
   return (
     <div style={{ maxWidth: 1080, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -146,121 +129,214 @@ export default function AutoRepair({ standaloneRepairId }: { standaloneRepairId?
           <div style={{ flex: 1, minWidth: 240 }}>
             <h2 style={{ margin: 0, fontSize: 19 }}>Auto-Repair Agent</h2>
             <p className="text-muted" style={{ margin: '4px 0 0', fontSize: 13 }}>
-              A failed test comes in → the agent finds the bug with RAG, fixes it with Claude,
-              lints, builds, and opens a pull request. Self-healing defect intelligence.
+              {standaloneRepairId
+                ? 'Live repair triggered by a failed test — RAG finds the bug, Claude fixes it, then it builds and opens a PR.'
+                : 'Runs automatically whenever a test fails: RAG finds the bug, Claude fixes it, then it type-checks, builds, and opens a PR. Every repair this session is listed below.'}
             </p>
           </div>
-          <IndexChip index={index} busy={indexBusy} onRebuild={rebuildIndex} />
+          {!standaloneRepairId && <IndexChip index={index} busy={indexBusy} onRebuild={rebuildIndex} />}
         </div>
       </div>
 
-      {/* ── Input (hidden in the standalone auto-repair window) ── */}
-      {!standaloneRepairId && (
-        <div className="card" style={{ padding: 18 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 14 }}>
-            <div>
-              <label className="form-label">Failed test / defect description</label>
-              <textarea className="form-input form-textarea" value={failure}
-                onChange={e => setFailure(e.target.value)} rows={3} disabled={running} />
-            </div>
-            <div>
-              <label className="form-label">Test ID</label>
-              <input className="form-input" value={testId} onChange={e => setTestId(e.target.value)} disabled={running} />
-              <button className="btn btn-primary" style={{ width: '100%', marginTop: 10 }}
-                onClick={start} disabled={running || !failure.trim()}>
-                {running ? '◐ Repairing…' : '▶ Run Auto-Repair'}
-              </button>
-            </div>
-          </div>
-          {index && !index.exists && (
-            <p style={{ marginTop: 10, fontSize: 12, color: 'var(--yellow)' }}>
-              ⚠ RAG index not built yet — click “Rebuild index” above before running.
-            </p>
-          )}
-          {error && <p style={{ marginTop: 10, fontSize: 12, color: 'var(--red)' }}>✕ {error}</p>}
-        </div>
-      )}
-      {standaloneRepairId && job && (
-        <div className="card" style={{ padding: 14 }}>
-          <div className="text-muted" style={{ fontSize: 12 }}>Auto-triggered by a failed test</div>
-          <div style={{ fontSize: 13, marginTop: 4 }}><strong>{job.test_id}</strong> — {job.failure}</div>
-          {error && <p style={{ marginTop: 8, fontSize: 12, color: 'var(--red)' }}>✕ {error}</p>}
+      {error && (
+        <div className="card" style={{ padding: 12 }}>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--red)' }}>✕ {error}</p>
         </div>
       )}
 
-      {/* ── Pipeline ── */}
-      {job && (
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>
-              Repair pipeline
-              <span className="text-muted" style={{ fontWeight: 400 }}> · {job.repair_id}</span>
-            </div>
-            <OverallBadge status={job.status} />
-          </div>
-
-          <div style={{ padding: '8px 18px 18px' }}>
-            {STAGES.map((meta, i) => {
-              const st = stages[meta.key];
-              const isActive = running && i === firstIncomplete;
-              const kind = statusOf(st, isActive);
-              return (
-                <StageRow key={meta.key} meta={meta} stage={st} kind={kind}
-                  last={i === STAGES.length - 1} />
-              );
-            })}
-          </div>
-
-          {/* ── Result banner ── */}
-          {done && (
-            <div style={{ padding: '14px 18px', borderTop: '1px solid var(--border)',
-              background: succeeded ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)' }}>
-              {succeeded ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <span className="badge badge-green">✓ Fixed &amp; built</span>
-                  <span className="text-muted" style={{ fontSize: 13 }}>
-                    The agent repaired {stages['apply']?.file || 'the code'} and the build passed.
-                    {prStage?.prepared && ' A PR branch is ready.'}
-                  </span>
-                  {prStage?.prepared && !prStage?.opened?.opened && (
-                    prConfirm ? (
-                      <span style={{ display: 'inline-flex', gap: 8, marginLeft: 'auto' }}>
-                        <button className="btn btn-primary btn-sm" onClick={openPr} disabled={prBusy}>
-                          {prBusy ? '◐ Opening…' : `Confirm push to ${prStage.remote}/${prStage.branch}`}
-                        </button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => setPrConfirm(false)} disabled={prBusy}>Cancel</button>
-                      </span>
-                    ) : (
-                      <button className="btn btn-primary btn-sm" style={{ marginLeft: 'auto' }}
-                        onClick={() => setPrConfirm(true)}>🔀 Open PR</button>
-                    )
-                  )}
-                  {prStage?.opened?.opened && (
-                    <a className="badge badge-accent" style={{ marginLeft: 'auto', textDecoration: 'none' }}
-                      href={prStage.opened.url} target="_blank" rel="noreferrer">↗ View PR</a>
-                  )}
-                </div>
-              ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span className="badge badge-red">✕ Repair incomplete</span>
-                  <span className="text-muted" style={{ fontSize: 13 }}>
-                    {job.error || 'The build did not pass — see the stage output above.'}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
+      {/* ── Dashboard / standalone list ── */}
+      {jobs.length === 0 ? (
+        <div className="card" style={{ padding: 40, textAlign: 'center' }}>
+          <div style={{ fontSize: 34, marginBottom: 10 }}>✅</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>No repairs yet</div>
+          <p className="text-muted" style={{ fontSize: 13, margin: '6px auto 0', maxWidth: 460 }}>
+            When a test fails during a run, the Auto-Repair agent starts automatically and its
+            progress appears here. Nothing has failed this session — restart the backend and the
+            list resets (repair history is in-memory).
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {jobs.map(job => (
+            <RepairCard
+              key={job.repair_id}
+              job={job}
+              open={standaloneRepairId ? true : expanded.has(job.repair_id)}
+              onToggle={() => toggle(job.repair_id)}
+              onUpdated={refresh}
+              lockToggle={!!standaloneRepairId}
+            />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
+// ── Repair card (collapsed summary → expandable pipeline) ───────────────────────
+
+function RepairCard({ job, open, onToggle, onUpdated, lockToggle }: {
+  job: RepairJob; open: boolean; onToggle: () => void; onUpdated: () => void; lockToggle: boolean;
+}) {
+  const running = job.status === 'pending' || job.status === 'running';
+  return (
+    <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      {/* Summary header — always shows the repair's context so it's never ambiguous */}
+      <div
+        onClick={() => !lockToggle && onToggle()}
+        style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px',
+          cursor: lockToggle ? 'default' : 'pointer' }}
+      >
+        <OverallBadge status={job.status} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <strong style={{ fontSize: 14 }}>{job.test_id || 'Unknown test'}</strong>
+            <span className={`badge ${job.auto ? 'badge-accent' : 'badge-muted'}`} style={{ fontSize: 10 }}>
+              {job.auto ? 'auto' : 'manual'}
+            </span>
+            {job.run_id && (
+              <span className="text-muted" style={{ fontSize: 11 }}>run {job.run_id}</span>
+            )}
+            <span className="text-muted" style={{ fontSize: 11, marginLeft: 'auto' }}>
+              {relTime(job.created_at)}
+            </span>
+          </div>
+          <div className="text-muted" style={{ fontSize: 12, marginTop: 3, overflow: 'hidden',
+            textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {job.failure || '—'}
+          </div>
+        </div>
+        {!lockToggle && (
+          <span className="text-muted" style={{ fontSize: 12 }}>{open ? '▲' : '▼'}</span>
+        )}
+      </div>
+
+      {open && (
+        <div style={{ borderTop: '1px solid var(--border)' }}>
+          <RepairPipeline job={job} running={running} onUpdated={onUpdated} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Pipeline (the 6 stages + result banner + Open PR) ───────────────────────────
+
+function RepairPipeline({ job, running, onUpdated }: {
+  job: RepairJob; running: boolean; onUpdated: () => void;
+}) {
+  const [prBusy, setPrBusy]       = useState(false);
+  const [prConfirm, setPrConfirm] = useState(false);
+  const [prErr, setPrErr]         = useState('');
+  const [delBusy, setDelBusy]     = useState(false);
+  const [delConfirm, setDelConfirm] = useState(false);
+
+  const stages = mergedStages(job);
+  const firstIncomplete = STAGES.findIndex(s => {
+    const st = stages[s.key]?.status;
+    return st !== 'done' && st !== 'warn';
+  });
+  const done = job.status === 'succeeded' || job.status === 'completed' || job.status === 'failed';
+  const buildStage = stages['build'];
+  const prStage    = stages['pr'];
+  const succeeded  = job.status === 'succeeded' || buildStage?.ok === true;
+
+  const openPr = async () => {
+    setPrBusy(true); setPrErr('');
+    try {
+      const outcome = await api.openRepairPr(job.repair_id);
+      if (!outcome.opened) setPrErr(`PR not raised: ${outcome.output || 'see server log'}`);
+      onUpdated();
+    } catch (e) {
+      setPrErr(e instanceof Error ? e.message : 'Open PR failed');
+    } finally { setPrBusy(false); setPrConfirm(false); }
+  };
+
+  const deletePr = async () => {
+    setDelBusy(true); setPrErr('');
+    try {
+      const outcome = await api.deleteRepairPr(job.repair_id);
+      if (!outcome.deleted) setPrErr(`PR not deleted: ${outcome.output || 'see server log'}`);
+      onUpdated();
+    } catch (e) {
+      setPrErr(e instanceof Error ? e.message : 'Delete PR failed');
+    } finally { setDelBusy(false); setDelConfirm(false); }
+  };
+
+  return (
+    <>
+      <div style={{ padding: '8px 18px 18px' }}>
+        {STAGES.map((meta, i) => {
+          const st = stages[meta.key];
+          const isActive = running && i === firstIncomplete;
+          const kind = statusOf(st, isActive);
+          return <StageRow key={meta.key} meta={meta} stage={st} kind={kind} last={i === STAGES.length - 1} />;
+        })}
+      </div>
+
+      {done && (
+        <div style={{ padding: '14px 18px', borderTop: '1px solid var(--border)',
+          background: succeeded ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)' }}>
+          {succeeded ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span className="badge badge-green">✓ Fixed &amp; built</span>
+              <span className="text-muted" style={{ fontSize: 13 }}>
+                The agent repaired {stages['apply']?.file || 'the code'} and the build passed.
+                {prStage?.prepared && ' A PR branch is ready.'}
+              </span>
+              {prStage?.prepared && !prStage?.opened?.opened && (
+                prConfirm ? (
+                  <span style={{ display: 'inline-flex', gap: 8, marginLeft: 'auto' }}>
+                    <button className="btn btn-primary btn-sm" onClick={openPr} disabled={prBusy}>
+                      {prBusy ? '◐ Opening…' : `Confirm push to ${prStage.remote}/${prStage.branch}`}
+                    </button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => setPrConfirm(false)} disabled={prBusy}>Cancel</button>
+                  </span>
+                ) : (
+                  <button className="btn btn-primary btn-sm" style={{ marginLeft: 'auto' }}
+                    onClick={() => setPrConfirm(true)}>🔀 Open PR</button>
+                )
+              )}
+              {prStage?.opened?.opened && (
+                <span style={{ display: 'inline-flex', gap: 8, marginLeft: 'auto', alignItems: 'center' }}>
+                  <a className="badge badge-accent" style={{ textDecoration: 'none' }}
+                    href={prStage.opened.url} target="_blank" rel="noreferrer">↗ View PR</a>
+                  {delConfirm ? (
+                    <>
+                      <button className="btn btn-danger btn-sm" onClick={deletePr} disabled={delBusy}>
+                        {delBusy ? '◐ Deleting…' : `Confirm delete ${prStage.branch}`}
+                      </button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => setDelConfirm(false)} disabled={delBusy}>Cancel</button>
+                    </>
+                  ) : (
+                    <button className="btn btn-secondary btn-sm" onClick={() => setDelConfirm(true)}
+                      title="Delete the pushed fix branch (closes the PR) so demo runs don't pile up">🗑 Delete PR</button>
+                  )}
+                </span>
+              )}
+              {prStage?.deleted?.deleted && !prStage?.opened?.opened && (
+                <span className="badge badge-muted" style={{ marginLeft: 'auto' }}>PR deleted</span>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span className="badge badge-red">✕ Repair incomplete</span>
+              <span className="text-muted" style={{ fontSize: 13 }}>
+                {job.error || 'The build did not pass — see the stage output above.'}
+              </span>
+            </div>
+          )}
+          {prErr && <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--red)' }}>✕ {prErr}</p>}
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function IndexChip({ index, busy, onRebuild }: {
-  index: {building: boolean; exists: boolean; message: string} | null; busy: boolean; onRebuild: () => void;
+  index: IndexState; busy: boolean; onRebuild: () => void;
 }) {
   const label = !index ? 'unknown' : index.building || busy ? 'building…' : index.exists ? 'ready' : 'not built';
   const cls = !index ? 'badge-muted' : index.building || busy ? 'badge-blue' : index.exists ? 'badge-green' : 'badge-yellow';
@@ -270,6 +346,9 @@ function IndexChip({ index, busy, onRebuild }: {
       <button className="btn btn-secondary btn-sm" onClick={onRebuild} disabled={busy || index?.building}>
         {busy || index?.building ? '◐ Indexing…' : '↻ Rebuild index'}
       </button>
+      {index?.message && (
+        <span className="text-muted" style={{ fontSize: 10, maxWidth: 240, textAlign: 'right' }}>{index.message}</span>
+      )}
     </div>
   );
 }
