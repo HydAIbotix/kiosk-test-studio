@@ -11,6 +11,9 @@ export default function LiveMonitor() {
   const [run,       setRun]     = useState<RunDetail | null>(null);
   const [feed,      setFeed]    = useState<FeedLine[]>([]);
   const [wsOpen,    setWsOpen]  = useState(false);
+  const [repair,    setRepair]  = useState<
+    { repairId: string; testId: string; url: string; done?: boolean; success?: boolean; prUrl?: string } | null
+  >(null);
   const wsRef   = useRef<WebSocket | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
@@ -78,6 +81,25 @@ export default function LiveMonitor() {
         });
         setFeed(f => [...f.slice(-200), ...lines]);
         return;
+      } else if (e.event === 'repair_started') {
+        const rid = String(e.repair_id ?? '');
+        const url = `${location.origin}${location.pathname}?repair=${encodeURIComponent(rid)}`;
+        setRepair({ repairId: rid, testId: String(e.test_id ?? ''), url });
+        try { window.open(url, `repair_${rid}`, 'width=1180,height=940'); } catch { /* popup blocked → banner button */ }
+        setFeed(f => [...f.slice(-200),
+          { ts: new Date().toLocaleTimeString(), text: `🛠 Auto-Repair started for ${e.test_id} — opening in a new window`, cls: 'line-info' },
+        ]);
+        return;
+      } else if (e.event === 'repair_done') {
+        const ok = !!e.success;
+        const prUrl = String(e.pr_url ?? '');
+        setRepair(r => (r && r.repairId === e.repair_id) ? { ...r, done: true, success: ok, prUrl } : r);
+        const lines: FeedLine[] = [{ ts: new Date().toLocaleTimeString(),
+          text: ok ? `🛠 Auto-Repair fixed ${e.test_id} — build passed` : `🛠 Auto-Repair for ${e.test_id} did not complete`,
+          cls: ok ? 'line-pass' : 'line-warn' }];
+        if (prUrl) lines.push({ ts: '', text: `       🔀 PR: ${prUrl}`, cls: 'line-info' });
+        setFeed(f => [...f.slice(-200), ...lines]);
+        return;
       } else if (e.event === 'run_started')   { text = '▶ Run started'; }
       else if (e.event === 'run_completed')   { text = '✓ Run completed'; cls = 'line-pass'; }
       else if (e.event === 'run_error')       { text = `✗ Error: ${e.error}`; cls = 'line-fail'; }
@@ -113,6 +135,33 @@ export default function LiveMonitor() {
 
   return (
     <div>
+      {repair && (
+        <div className="card section" style={{
+          padding: '14px 18px', marginBottom: 16,
+          border: '1px solid var(--accent)',
+          background: 'linear-gradient(135deg, rgba(99,102,241,0.16), rgba(59,130,246,0.06))',
+          display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+        }}>
+          <div style={{ fontSize: 24 }}>🛠️</div>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ fontWeight: 600 }}>
+              Auto-Repair {repair.done ? (repair.success ? '✓ fixed & built' : 'finished') : 'running'} — {repair.testId}
+            </div>
+            <div className="text-muted" style={{ fontSize: 12 }}>
+              {repair.done
+                ? (repair.prUrl ? 'Fix applied, built, and a PR was raised.' : 'Fix applied and built.')
+                : 'Diagnosing with Claude and repairing the code — opening in a new window…'}
+            </div>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => window.open(repair.url, `repair_${repair.repairId}`, 'width=1180,height=940')}>
+            ↗ Open repair window
+          </button>
+          {repair.prUrl && (
+            <a className="badge badge-accent" style={{ textDecoration: 'none' }} href={repair.prUrl} target="_blank" rel="noreferrer">🔀 View PR</a>
+          )}
+          <button className="btn btn-secondary btn-sm" onClick={() => setRepair(null)}>Dismiss</button>
+        </div>
+      )}
       <div className="grid-2 section">
         {/* Run selector */}
         <div className="card">

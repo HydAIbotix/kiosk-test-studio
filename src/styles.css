@@ -188,6 +188,7 @@ tr:hover td { background: var(--surface2); }
 .blink { animation: blink 1s infinite; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
 @keyframes explore-progress { 0%{transform:translateX(-150%)} 100%{transform:translateX(350%)} }
+@keyframes spin { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }
 
 /* ── App-map viewer ─────────────────────────────────────────────────────────── */
 .screen-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px,1fr)); gap: 14px; }

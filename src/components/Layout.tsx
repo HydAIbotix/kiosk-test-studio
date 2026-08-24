@@ -4,7 +4,7 @@ import { api } from '../api/client';
 
 type Page =
   | 'dashboard' | 'explorer' | 'app-map' | 'test-intake'
-  | 'configuration' | 'robot-setup' | 'camera-test' | 'execution' | 'monitor' | 'results';
+  | 'configuration' | 'robot-setup' | 'camera-test' | 'execution' | 'monitor' | 'results' | 'auto-repair';
 
 const NAV: { group: string; items: { id: Page; icon: string; label: string }[] }[] = [
   {
@@ -25,6 +25,12 @@ const NAV: { group: string; items: { id: Page; icon: string; label: string }[] }
       { id: 'execution',     icon: '▶',  label: 'Test Execution' },
       { id: 'monitor',       icon: '📡', label: 'Live Monitor' },
       { id: 'results',       icon: '📊', label: 'Results' },
+    ],
+  },
+  {
+    group: 'Self-Healing',
+    items: [
+      { id: 'auto-repair',   icon: '🛠', label: 'Auto-Repair' },
     ],
   },
   {

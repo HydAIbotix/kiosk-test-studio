@@ -91,6 +91,13 @@ export const api = {
   getTcPlan:      (body: TcPlanInput)         => req<TcPlan>('/tc-plan', {method:'POST', body:JSON.stringify(body)}, 90_000),
   deleteTcPlan:   (test_id: string)           => req(`/tc-plan/${test_id}`, {method:'DELETE'}),
   getRunDefects:  (run_id: string)            => req<Defect[]>(`/runs/${run_id}/defects`),
+  // Auto-Repair (RAG + Claude self-healing)
+  startRepair:     (body: {failure: string; test_id?: string; run_id?: string; apply?: boolean}) =>
+    req<{repair_id: string; status: string}>('/repair', {method: 'POST', body: JSON.stringify(body)}),
+  getRepair:       (id: string)               => req<RepairJob>(`/repair/${id}`),
+  openRepairPr:    (id: string)               => req<RepairPrOutcome>(`/repair/${id}/open-pr`, {method: 'POST', body: JSON.stringify({confirm: true})}, 60_000),
+  buildRepairIndex:()                         => req<{status: string; message?: string}>('/repair/index', {method: 'POST'}),
+  getRepairIndex:  ()                         => req<{building: boolean; exists: boolean; message: string; persist_dir: string}>('/repair/index'),
   getExploreConfig: ()                       => req<ExploreConfig>('/explore-config'),
   setExploreMode: (mode: string)             => req<{mode:string;status:string}>('/explore-config', {method:'PATCH',body:JSON.stringify({mode})}),
   setCardService: (card_service_url: string) => req<{status:string;card_service_url:string}>('/config/card-service', {method:'PATCH',body:JSON.stringify({card_service_url})}),
@@ -347,6 +354,39 @@ export type Defect = {
   priority: string; jira_key: string; jira_url: string;
   status: string; evidence: string[];
   created_at: string | null;
+};
+
+// ── Auto-Repair types ──────────────────────────────────────────────────────────
+
+export type RepairHit = {
+  file: string; type: string;
+  start_line?: number | null; end_line?: number | null; snippet: string;
+};
+export type RepairPatch = {
+  file_path: string; find: string; replace: string; explanation: string;
+};
+export type RepairPrOutcome = {
+  opened: boolean; url?: string; output?: string;
+  pushed?: boolean; created?: boolean; stage?: string;
+};
+export type RepairStage = {
+  stage?: string;
+  status?: 'running' | 'done' | 'warn' | 'failed';
+  hits?: RepairHit[];            // retrieve
+  patch?: RepairPatch;          // diagnose
+  file?: string;                // apply
+  ok?: boolean; code?: number; output?: string; cmd?: string;   // test / build
+  prepared?: boolean; branch?: string; base?: string; remote?: string;   // pr
+  commit?: string; title?: string; body?: string; diff?: string;
+  opened?: RepairPrOutcome;
+};
+export type RepairJob = {
+  repair_id: string;
+  status: 'pending' | 'running' | 'succeeded' | 'completed' | 'failed';
+  failure: string; test_id?: string; run_id?: string | null;
+  created_at?: string; updated_at?: string; error?: string;
+  stages?: Record<string, RepairStage>;
+  result?: { success?: boolean; dry_run?: boolean; stages?: Record<string, RepairStage> };
 };
 
 export function runWs(run_id: string, onEvent: (e: unknown) => void) {
