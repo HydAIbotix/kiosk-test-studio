@@ -96,11 +96,13 @@ export const api = {
   getRepair:       (id: string)               => req<RepairJob>(`/repair/${id}`),
   openRepairPr:    (id: string)               => req<RepairPrOutcome>(`/repair/${id}/open-pr`, {method: 'POST', body: JSON.stringify({confirm: true})}, 60_000),
   deleteRepairPr:  (id: string)               => req<RepairPrDeleteOutcome>(`/repair/${id}/delete-pr`, {method: 'POST'}, 60_000),
+  cancelRepair:    (id: string)               => req<{status: string; cancelling: boolean; message?: string}>(`/repair/${id}/cancel`, {method: 'POST'}),
   buildRepairIndex:()                         => req<{status: string; message?: string}>('/repair/index', {method: 'POST'}),
   getRepairIndex:  ()                         => req<{building: boolean; exists: boolean; message: string; persist_dir: string}>('/repair/index'),
   getExploreConfig: ()                       => req<ExploreConfig>('/explore-config'),
   setExploreMode: (mode: string)             => req<{mode:string;status:string}>('/explore-config', {method:'PATCH',body:JSON.stringify({mode})}),
   setCardService: (card_service_url: string) => req<{status:string;card_service_url:string}>('/config/card-service', {method:'PATCH',body:JSON.stringify({card_service_url})}),
+  setRepairLlm: (backend: 'claude'|'local') => req<{status:string; repair_llm:{backend:'claude'|'local'; local_model:string; local_base_url:string}}>('/config/repair-llm', {method:'PATCH', body:JSON.stringify({backend})}),
   submitVerdict: (run_id: string, test_id: string, verdict: 'passed'|'failed') =>
     req<{status:string;test_id:string;outcome:string}>(`/runs/${run_id}/verdict`, {method:'PATCH',body:JSON.stringify({test_id,verdict})}),
   getTcConfig: (test_id: string)   => JSON.parse(localStorage.getItem(`tc_config_${test_id}`) || 'null') as TcConfig | null,
@@ -167,6 +169,7 @@ export type Config = {
   exploration_mode: string;
   card_service_url: string;
   viewport: {width:number;height:number}; camera: {width:number;height:number};
+  repair_llm?: { backend: 'claude'|'local'; local_model: string; local_base_url: string };
   kiosks: KioskConfig[];
   devices: DeviceConfig[];
 };
@@ -364,6 +367,8 @@ export type RepairHit = {
 };
 export type RepairPatch = {
   file_path: string; find: string; replace: string; explanation: string;
+  source?: 'claude'|'local'|'demo-fallback';   // which provider produced the patch
+  model?: string;                               // the concrete model name
 };
 export type RepairPrOutcome = {
   opened: boolean; url?: string; output?: string;
@@ -386,7 +391,7 @@ export type RepairStage = {
 };
 export type RepairJob = {
   repair_id: string;
-  status: 'pending' | 'running' | 'succeeded' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'completed' | 'failed';
   auto?: boolean;              // true → auto-triggered by a failed test run
   failure: string; test_id?: string; run_id?: string | null;
   created_at?: string; updated_at?: string; error?: string;

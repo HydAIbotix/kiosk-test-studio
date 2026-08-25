@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
 import { api } from '../api/client';
 import type { RepairJob, RepairStage } from '../api/client';
 
@@ -178,7 +178,15 @@ export default function AutoRepair({ standaloneRepairId }: { standaloneRepairId?
 function RepairCard({ job, open, onToggle, onUpdated, lockToggle }: {
   job: RepairJob; open: boolean; onToggle: () => void; onUpdated: () => void; lockToggle: boolean;
 }) {
-  const running = job.status === 'pending' || job.status === 'running';
+  const running = job.status === 'pending' || job.status === 'running' || job.status === 'cancelling';
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const cancel = async (e: ReactMouseEvent) => {
+    e.stopPropagation();               // don't toggle the card open/closed
+    setCancelBusy(true);
+    try { await api.cancelRepair(job.repair_id); onUpdated(); }
+    catch { /* poll will reflect final state */ }
+    finally { setCancelBusy(false); }
+  };
   return (
     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
       {/* Summary header — always shows the repair's context so it's never ambiguous */}
@@ -206,6 +214,12 @@ function RepairCard({ job, open, onToggle, onUpdated, lockToggle }: {
             {job.failure || '—'}
           </div>
         </div>
+        {running && (
+          <button className="btn btn-danger btn-sm" onClick={cancel} disabled={cancelBusy || job.status === 'cancelling'}
+            title="Stop this repair so you can switch to other tasks">
+            {job.status === 'cancelling' || cancelBusy ? '◐ Cancelling…' : '⨯ Cancel'}
+          </button>
+        )}
         {!lockToggle && (
           <span className="text-muted" style={{ fontSize: 12 }}>{open ? '▲' : '▼'}</span>
         )}
@@ -236,7 +250,7 @@ function RepairPipeline({ job, running, onUpdated }: {
     const st = stages[s.key]?.status;
     return st !== 'done' && st !== 'warn';
   });
-  const done = job.status === 'succeeded' || job.status === 'completed' || job.status === 'failed';
+  const done = job.status === 'succeeded' || job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled';
   const buildStage = stages['build'];
   const prStage    = stages['pr'];
   const succeeded  = job.status === 'succeeded' || buildStage?.ok === true;
@@ -318,6 +332,13 @@ function RepairPipeline({ job, running, onUpdated }: {
                 <span className="badge badge-muted" style={{ marginLeft: 'auto' }}>PR deleted</span>
               )}
             </div>
+          ) : job.status === 'cancelled' ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span className="badge badge-muted">⨯ Cancelled</span>
+              <span className="text-muted" style={{ fontSize: 13 }}>
+                Repair was cancelled — no changes were committed. Re-run the failed test to try again.
+              </span>
+            </div>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span className="badge badge-red">✕ Repair incomplete</span>
@@ -355,11 +376,13 @@ function IndexChip({ index, busy, onRebuild }: {
 
 function OverallBadge({ status }: { status: RepairJob['status'] }) {
   const map: Record<RepairJob['status'], [string, string]> = {
-    pending:   ['badge-muted',  'Pending'],
-    running:   ['badge-blue',   '◐ Running'],
-    succeeded: ['badge-green',  '✓ Succeeded'],
-    completed: ['badge-yellow', 'Completed'],
-    failed:    ['badge-red',    '✕ Failed'],
+    pending:    ['badge-muted',  'Pending'],
+    running:    ['badge-blue',   '◐ Running'],
+    cancelling: ['badge-yellow', '◐ Cancelling…'],
+    cancelled:  ['badge-muted',  '⨯ Cancelled'],
+    succeeded:  ['badge-green',  '✓ Succeeded'],
+    completed:  ['badge-yellow', 'Completed'],
+    failed:     ['badge-red',    '✕ Failed'],
   };
   const [cls, label] = map[status] || ['badge-muted', status];
   return <span className={`badge ${cls}`}>{label}</span>;
@@ -430,8 +453,19 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
 
   if (stageKey === 'diagnose' && stage.patch) {
     const p = stage.patch;
+    const srcLabel = p.source === 'local' ? `🖥 Local LLM${p.model ? ` · ${p.model}` : ''}`
+      : p.source === 'demo-fallback' ? '⚙ Demo fallback (deterministic)'
+      : `☁ Claude${p.model ? ` · ${p.model}` : ''}`;
+    const srcColor = p.source === 'local' ? 'var(--blue, #3b82f6)'
+      : p.source === 'demo-fallback' ? 'var(--yellow)' : 'var(--accent)';
     return (
       <div style={{ marginTop: 8 }}>
+        {p.source && (
+          <div style={{ display: 'inline-block', fontSize: 10, fontWeight: 600, color: srcColor,
+            border: `1px solid ${srcColor}`, borderRadius: 6, padding: '2px 7px', marginBottom: 8 }}>
+            {srcLabel}
+          </div>
+        )}
         <div style={{ fontSize: 12, marginBottom: 8 }}>💡 {p.explanation}</div>
         <div className="text-muted" style={{ fontSize: 11, marginBottom: 6 }}>{p.file_path}</div>
         <div style={{ ...box, whiteSpace: 'pre-wrap' }}>

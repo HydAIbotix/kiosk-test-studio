@@ -35,11 +35,15 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
   const [cardSvc,      setCardSvc]    = useState('');
   const [cardSvcSaving,setCardSvcSav] = useState(false);
   const [cardSvcMsg,   setCardSvcMsg] = useState('');
+  const [repairLlm,    setRepairLlm]  = useState<'claude'|'local'>('claude');
+  const [repairSaving, setRepairSav]  = useState(false);
+  const [repairMsg,    setRepairMsg]  = useState('');
 
   const reload = () => api.getConfig().then(c => {
     setConfig(c);
     setRobotForm({ robot_backend: c.robot_backend, robot_ip: c.robot_ip, robot_port: c.robot_port, agv_url: c.agv_url || '', arm_url: c.arm_url || '', agv_home_target: c.agv_home_target || '' });
     setCardSvc(c.card_service_url || '');
+    setRepairLlm((c.repair_llm?.backend as 'claude'|'local') || 'claude');
     if (c.kiosks.length > 0) setKiosk(c.kiosks[0]);
   });
 
@@ -53,6 +57,20 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
       setCardSvcMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setCardSvcSav(false);
+    }
+  };
+  const saveRepairLlm = async () => {
+    setRepairSav(true); setRepairMsg('');
+    try {
+      const r = await api.setRepairLlm(repairLlm);
+      setRepairMsg(r.repair_llm.backend === 'local'
+        ? `✓ Saved — Local LLM (${r.repair_llm.local_model})`
+        : '✓ Saved — Claude (primary)');
+      reload();
+    } catch (e) {
+      setRepairMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRepairSav(false);
     }
   };
   const reloadExploreConf = () => api.getExploreConfig().then(c => { setExploreCon(c); setExplMode(c.mode); });
@@ -320,6 +338,88 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
           </div>
         </div>
       )}
+
+      {/* ── Auto-Repair Model ──────────────────────────────────────────────── */}
+      <div className="card section">
+        <div className="section-title">Auto-Repair Model</div>
+        <p className="text-muted" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.6 }}>
+          Which model the <strong>Auto-Repair agent</strong> uses to diagnose a failed test and propose the
+          fix. The other option stays as an automatic backup if the first can't be reached, so a repair never
+          dead-ends. Applies to the next repair — no restart needed.
+        </p>
+
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+          {/* ── Claude (default) ── */}
+          <label
+            style={{
+              flex: 1, minWidth: 220,
+              border: `2px solid ${repairLlm === 'claude' ? 'var(--accent)' : 'var(--border)'}`,
+              borderRadius: 10, padding: '14px 16px', cursor: 'pointer',
+              background: repairLlm === 'claude' ? 'rgba(99,102,241,0.06)' : 'var(--surface)',
+              transition: 'all 0.15s',
+            }}
+          >
+            <input
+              type="radio" name="repair_llm" value="claude"
+              checked={repairLlm === 'claude'}
+              onChange={() => setRepairLlm('claude')}
+              style={{ marginRight: 8 }}
+            />
+            <strong>Claude (Opus 4.8)</strong>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
+              Cloud model — best reasoning, including design-document–level fixes. Requires an
+              <code>ANTHROPIC_API_KEY</code> and network access.
+              <br />
+              <span style={{ color: 'var(--green)', fontWeight: 500 }}>✓ Default</span>
+            </div>
+          </label>
+
+          {/* ── Local LLM ── */}
+          <label
+            style={{
+              flex: 1, minWidth: 220,
+              border: `2px solid ${repairLlm === 'local' ? 'var(--accent)' : 'var(--border)'}`,
+              borderRadius: 10, padding: '14px 16px', cursor: 'pointer',
+              background: repairLlm === 'local' ? 'rgba(99,102,241,0.06)' : 'var(--surface)',
+              transition: 'all 0.15s',
+            }}
+          >
+            <input
+              type="radio" name="repair_llm" value="local"
+              checked={repairLlm === 'local'}
+              onChange={() => setRepairLlm('local')}
+              style={{ marginRight: 8 }}
+            />
+            <strong>Local LLM</strong>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
+              Self-hosted, offline backup via Ollama —
+              <code>{config?.repair_llm?.local_model || 'qwen2.5-coder:14b'}</code>. No cloud / no API key.
+              Requires an Ollama server at <code>{config?.repair_llm?.local_base_url || 'http://localhost:11434'}</code>
+              with the model pulled. Good for the obvious fixes; weaker on design-level reasoning.
+            </div>
+          </label>
+        </div>
+
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={saveRepairLlm}
+            disabled={repairSaving || repairLlm === (config?.repair_llm?.backend || 'claude')}
+          >
+            {repairSaving ? '⏳ Saving…' : '💾 Save Model'}
+          </button>
+          {repairMsg && (
+            <span style={{ fontSize: 12, color: repairMsg.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>
+              {repairMsg}
+            </span>
+          )}
+          {repairLlm === (config?.repair_llm?.backend || 'claude') && !repairMsg && (
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+              Current: <strong>{repairLlm === 'local' ? 'Local LLM' : 'Claude'}</strong>
+            </span>
+          )}
+        </div>
+      </div>
 
       {/* ── Device Map ─────────────────────────────────────────────────────── */}
       <div className="card section">
