@@ -453,19 +453,8 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
 
   if (stageKey === 'diagnose' && stage.patch) {
     const p = stage.patch;
-    const srcLabel = p.source === 'local' ? `🖥 Local LLM${p.model ? ` · ${p.model}` : ''}`
-      : p.source === 'demo-fallback' ? '⚙ Demo fallback (deterministic)'
-      : `☁ Claude${p.model ? ` · ${p.model}` : ''}`;
-    const srcColor = p.source === 'local' ? 'var(--blue, #3b82f6)'
-      : p.source === 'demo-fallback' ? 'var(--yellow)' : 'var(--accent)';
     return (
       <div style={{ marginTop: 8 }}>
-        {p.source && (
-          <div style={{ display: 'inline-block', fontSize: 10, fontWeight: 600, color: srcColor,
-            border: `1px solid ${srcColor}`, borderRadius: 6, padding: '2px 7px', marginBottom: 8 }}>
-            {srcLabel}
-          </div>
-        )}
         <div style={{ fontSize: 12, marginBottom: 8 }}>💡 {p.explanation}</div>
         <div className="text-muted" style={{ fontSize: 11, marginBottom: 6 }}>{p.file_path}</div>
         <div style={{ ...box, whiteSpace: 'pre-wrap' }}>
