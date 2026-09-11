@@ -1,0 +1,20 @@
+# Cloud-agnostic stack for the Kiosk Test Studio (operator UI). One `docker compose up` builds the
+# SPA and serves it via nginx, reverse-proxying /api/ (REST + WebSocket) to the QA backend running
+# as a SEPARATE stack (robotic-vision-agent-claude) on this same VM. Only the studio port is public.
+#
+#   studio → nginx :80 in-container, published on :8080  (the POS already uses host :80)
+#
+# The backend's :8001 is reached over the docker host-gateway (host.docker.internal), so this works
+# WITHOUT joining the backend's compose network — the backend just needs to be up and publishing
+# 8001 on the host (it does). Open  http://<VM-EXTERNAL-IP>:8080  in a browser.
+#
+# Run:  docker compose up -d --build
+services:
+  studio:
+    build: .
+    ports:
+      - "8080:80"
+    extra_hosts:
+      # Lets nginx's /api/ proxy reach the backend's published :8001 on the VM host.
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
