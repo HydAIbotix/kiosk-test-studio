@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, runWs, type Run, type RunDetail } from '../api/client';
 import StatusBadge from '../components/StatusBadge';
 import StepShots from '../components/StepShots';
+import AutoRepair from './AutoRepair';
 
 type FeedLine = { ts: string; text: string; cls: string };
 
@@ -14,6 +15,8 @@ export default function LiveMonitor() {
   const [repair,    setRepair]  = useState<
     { repairId: string; testId: string; url: string; done?: boolean; success?: boolean; prUrl?: string } | null
   >(null);
+  // When the browser blocks the pop-out window (no user gesture), show the repair inline in this tab.
+  const [inlineRepairId, setInlineRepairId] = useState<string | null>(null);
   const wsRef   = useRef<WebSocket | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
@@ -85,9 +88,14 @@ export default function LiveMonitor() {
         const rid = String(e.repair_id ?? '');
         const url = `${location.origin}${location.pathname}?repair=${encodeURIComponent(rid)}`;
         setRepair({ repairId: rid, testId: String(e.test_id ?? ''), url });
-        try { window.open(url, `repair_${rid}`, 'width=1180,height=940'); } catch { /* popup blocked → banner button */ }
+        // Prefer a separate window, but browsers block programmatic window.open (no user gesture)
+        // and return null. When blocked, auto-open the repair INLINE in this tab so it still launches
+        // automatically — no popup permission or click needed.
+        let win: Window | null = null;
+        try { win = window.open(url, `repair_${rid}`, 'width=1180,height=940'); } catch { win = null; }
+        if (!win) setInlineRepairId(rid);
         setFeed(f => [...f.slice(-200),
-          { ts: new Date().toLocaleTimeString(), text: `🛠 Auto-Repair started for ${e.test_id} — opening in a new window`, cls: 'line-info' },
+          { ts: new Date().toLocaleTimeString(), text: `🛠 Auto-Repair started for ${e.test_id} — opening the repair view`, cls: 'line-info' },
         ]);
         return;
       } else if (e.event === 'repair_done') {
@@ -135,6 +143,23 @@ export default function LiveMonitor() {
 
   return (
     <div>
+      {inlineRepairId && (
+        <div
+          onClick={() => setInlineRepairId(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.55)',
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 24, overflowY: 'auto',
+          }}
+        >
+          <div onClick={ev => ev.stopPropagation()} className="card"
+               style={{ width: 'min(1180px, 96vw)', maxHeight: '92vh', overflow: 'auto', position: 'relative' }}>
+            <button className="btn btn-secondary btn-sm"
+                    style={{ position: 'absolute', top: 10, right: 10, zIndex: 1 }}
+                    onClick={() => setInlineRepairId(null)}>✕ Close</button>
+            <AutoRepair standaloneRepairId={inlineRepairId} />
+          </div>
+        </div>
+      )}
       {repair && (
         <div className="card section" style={{
           padding: '14px 18px', marginBottom: 16,
@@ -150,16 +175,16 @@ export default function LiveMonitor() {
             <div className="text-muted" style={{ fontSize: 12 }}>
               {repair.done
                 ? (repair.prUrl ? 'Fix applied, built, and a PR was raised.' : 'Fix applied and built.')
-                : 'Diagnosing with Claude and repairing the code — opening in a new window…'}
+                : 'Diagnosing with Claude and repairing the code — the repair view opened automatically.'}
             </div>
           </div>
-          <button className="btn btn-primary btn-sm" onClick={() => window.open(repair.url, `repair_${repair.repairId}`, 'width=1180,height=940')}>
+          <button className="btn btn-primary btn-sm" onClick={() => { const w = window.open(repair.url, `repair_${repair.repairId}`, 'width=1180,height=940'); if (!w) setInlineRepairId(repair.repairId); }}>
             ↗ Open repair window
           </button>
           {repair.prUrl && (
             <a className="badge badge-accent" style={{ textDecoration: 'none' }} href={repair.prUrl} target="_blank" rel="noreferrer">🔀 View PR</a>
           )}
-          <button className="btn btn-secondary btn-sm" onClick={() => setRepair(null)}>Dismiss</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => { setRepair(null); setInlineRepairId(null); }}>Dismiss</button>
         </div>
       )}
       <div className="grid-2 section">
