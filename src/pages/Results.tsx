@@ -103,6 +103,9 @@ function ResultCard({ result, runId, defect }: { result: RunDetail['results'][0]
   const [open, setOpen] = useState(false);
   const passed = result.step_results?.filter(s => s.success).length ?? 0;
   const total  = result.step_results?.length ?? 0;
+  const testPassed = result.outcome === 'passed';
+  // A step that failed in the fast path but is part of a PASSED run was recovered by Tier-3 vision.
+  const recoveredCount = testPassed ? (result.step_results?.filter(s => !s.success).length ?? 0) : 0;
   return (
     <div className="card card-sm" style={{ borderColor: result.outcome === 'passed' ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)' }}>
       <div className="row" style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
@@ -115,6 +118,12 @@ function ResultCard({ result, runId, defect }: { result: RunDetail['results'][0]
             style={{ fontSize: 11, color: SEVERITY_COLOR[defect.severity] ?? 'var(--red)', fontWeight: 600, textDecoration: 'none', border: `1px solid ${SEVERITY_COLOR[defect.severity] ?? 'var(--red)'}`, borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap' }}>
             {defect.jira_key} ↗
           </a>
+        )}
+        {recoveredCount > 0 && (
+          <span className="tag" style={{ color: 'var(--amber, #f59e0b)', borderColor: 'var(--amber, #f59e0b)', whiteSpace: 'nowrap' }}
+                title="These steps failed on the fast path but Tier-3 vision recovered the run.">
+            ⟲ Tier-3 recovered {recoveredCount}
+          </span>
         )}
         <span style={{ fontSize: 11 }}>{passed}/{total}</span>
         <span className="text-muted">{open ? '▲' : '▼'}</span>
@@ -135,7 +144,9 @@ function ResultCard({ result, runId, defect }: { result: RunDetail['results'][0]
               {defect.probable_fix && <div style={{ fontSize: 11, color: 'var(--muted)' }}><strong>Fix:</strong> {defect.probable_fix}</div>}
             </div>
           )}
-          {result.step_results?.map((s, i) => <StepRow key={i} step={s} idx={i+1} runId={runId} />)}
+          {result.step_results?.map((s, i) => (
+            <StepRow key={i} step={s} idx={i+1} runId={runId} recovered={testPassed && !s.success} />
+          ))}
           {result.vision_summary && (
             <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>{result.vision_summary}</p>
           )}
@@ -145,15 +156,31 @@ function ResultCard({ result, runId, defect }: { result: RunDetail['results'][0]
   );
 }
 
-function StepRow({ step, idx, runId }: { step: StepResult; idx: number; runId: string }) {
+const AMBER = 'var(--amber, #f59e0b)';
+
+function StepRow({ step, idx, runId, recovered }: { step: StepResult; idx: number; runId: string; recovered?: boolean }) {
+  // recovered = this step failed in the fast (Tier-1/2) path but Tier-3 vision recovered the run,
+  // which ultimately PASSED. Show it amber ("⟲ recovered") instead of a red ✗ so the drill-down
+  // matches the overall PASS — the step didn't ultimately block the test.
+  const icon  = step.success ? '✓' : recovered ? '⟲' : '✗';
+  const iconColor = step.success ? undefined : recovered ? AMBER : 'var(--red)';
   return (
     <div className="step-row">
-      <span className="step-icon">{step.success ? '✓' : '✗'}</span>
+      <span className="step-icon" style={{ color: iconColor }}>{icon}</span>
       <div className="step-text">
-        <div>{step.step}</div>
+        <div>
+          {step.step}
+          {recovered && (
+            <span className="tag" style={{ marginLeft: 6, color: AMBER, borderColor: AMBER }}>
+              recovered by Tier-3
+            </span>
+          )}
+        </div>
         {step.note && <div className="step-meta">{step.note}</div>}
         {step.observation && !step.success && (
-          <div className="step-meta" style={{ color: 'var(--red)' }}>{step.observation}</div>
+          <div className="step-meta" style={{ color: recovered ? AMBER : 'var(--red)' }}>
+            {recovered ? `Initial attempt: ${step.observation} — recovered by Tier-3 vision.` : step.observation}
+          </div>
         )}
         {step.expected_screen && <div className="step-meta">expected: {step.expected_screen} → actual: {step.actual_screen}</div>}
         {step.method && <span className="tag" style={{ marginTop: 2 }}>{step.method}</span>}

@@ -108,7 +108,16 @@ export default function LiveMonitor() {
         if (prUrl) lines.push({ ts: '', text: `       🔀 PR: ${prUrl}`, cls: 'line-info' });
         setFeed(f => [...f.slice(-200), ...lines]);
         return;
-      } else if (e.event === 'run_started')   { text = '▶ Run started'; }
+      } else if (e.event === 'log') {
+        // Free-text progress (e.g. Tier-3 vision recovery). Without this branch these events were
+        // dropped, so the feed looked stuck on the last step while Tier-3 worked for several seconds.
+        const msg = String(e.message ?? '').trim();
+        if (!msg) return;
+        text = msg;
+        cls  = /fail|error|✗|stuck/i.test(msg) ? 'line-warn'
+             : /tier-3|recover|vision/i.test(msg) ? 'line-info' : 'line-muted';
+      }
+      else if (e.event === 'run_started')   { text = '▶ Run started'; }
       else if (e.event === 'run_completed')   { text = '✓ Run completed'; cls = 'line-pass'; }
       else if (e.event === 'run_error')       { text = `✗ Error: ${e.error}`; cls = 'line-fail'; }
       else if (e.event === 'suite_completed') { text = '  Suite done'; }
@@ -340,6 +349,11 @@ function StoredResult({ result, runId }: { result: TestResultDetail; runId: stri
         {!passed && failedSteps.length > 0 && (
           <span style={{ fontSize: 11, color: 'var(--red)' }}>{failedSteps.length} step{failedSteps.length > 1 ? 's' : ''} failed</span>
         )}
+        {passed && failedSteps.length > 0 && (
+          <span style={{ fontSize: 11, color: '#f59e0b' }} title="Recovered by Tier-3 vision after a fast-path miss">
+            ⟲ {failedSteps.length} recovered by Tier-3
+          </span>
+        )}
         <span style={{ fontSize: 12, color: 'var(--muted)' }}>{open ? '▲' : '▼'}</span>
       </button>
 
@@ -355,19 +369,28 @@ function StoredResult({ result, runId }: { result: TestResultDetail; runId: stri
             <div>
               <div style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600, marginBottom: 6 }}>STEPS ({steps.length})</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                {steps.map((s, i) => (
+                {steps.map((s, i) => {
+                  // A step that failed but is part of a PASSED run was recovered by Tier-3 vision →
+                  // show amber "⟲ recovered", not a red ✗, so the detail matches the overall PASS.
+                  const recovered = passed && !s.success;
+                  const icon  = s.success ? '✓' : recovered ? '⟲' : '✗';
+                  const color = s.success ? 'var(--green)' : recovered ? '#f59e0b' : 'var(--red)';
+                  return (
                   <div key={i} style={{ fontSize: 12 }}>
                     <div className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
-                      <span style={{ color: s.success ? 'var(--green)' : 'var(--red)', minWidth: 14, flexShrink: 0 }}>{s.success ? '✓' : '✗'}</span>
-                      <span style={{ color: 'var(--text)', flex: 1 }}>{s.step}</span>
+                      <span style={{ color, minWidth: 14, flexShrink: 0 }}>{icon}</span>
+                      <span style={{ color: 'var(--text)', flex: 1 }}>{s.step}{recovered && ' — recovered by Tier-3'}</span>
                       {s.note && <span style={{ fontSize: 11, color: 'var(--muted)', maxWidth: 240 }}>{s.note}</span>}
                     </div>
                     {s.observation && !s.success && (
-                      <div style={{ fontSize: 11, color: 'var(--red)', margin: '2px 0 0 22px' }}>{s.observation}</div>
+                      <div style={{ fontSize: 11, color: recovered ? '#f59e0b' : 'var(--red)', margin: '2px 0 0 22px' }}>
+                        {recovered ? `Initial attempt: ${s.observation} — recovered by Tier-3.` : s.observation}
+                      </div>
                     )}
                     <div style={{ marginLeft: 22 }}><StepShots runId={runId} step={s} /></div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

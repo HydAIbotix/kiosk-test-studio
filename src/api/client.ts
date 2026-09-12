@@ -125,6 +125,7 @@ export type StepResult = {
   step: string; success: boolean; method?: string;
   note?: string; expected_screen?: string; actual_screen?: string;
   expected_text?: string; observation?: string;
+  recovered_by_tier3?: boolean;   // step failed in Tier-1/2 but Tier-3 vision recovered the run
   screenshot_before?: string;
   screenshot_after?: string;
 };
@@ -139,6 +140,7 @@ export function runScreenshotUrl(runId: string, pathOrName: string): string {
 export type TestResultDetail = {
   test_id: string; summary: string; outcome: string;
   step_results: StepResult[]; vision_summary: string;
+  tier3_recovered?: boolean;   // a Tier-3 vision handoff recovered this run after a plan step failed
 };
 
 export type RunDetail = Run & { results: TestResultDetail[] };
