@@ -67,7 +67,14 @@ export default function AutoRepair({ standaloneRepairId }: { standaloneRepairId?
   const pollRef = useRef<number | undefined>(undefined);
 
   const refreshIndex = useCallback(async () => {
-    try { setIndex(await api.getRepairIndex()); } catch { /* backend down */ }
+    try {
+      const s = await api.getRepairIndex();
+      setIndex(s);
+      // Self-heal the badge: whenever the backend is no longer building, clear the local busy flag.
+      // The rebuild loop can miss the building→done transition (a race, or a graphrag build whose
+      // "exists" only flips once Neo4j is populated), which otherwise left the badge stuck on "building".
+      if (!s.building) setIndexBusy(false);
+    } catch { /* backend down */ }
   }, []);
 
   // Data source: a single job in the standalone window, else the full dashboard list.
@@ -88,7 +95,9 @@ export default function AutoRepair({ standaloneRepairId }: { standaloneRepairId?
     refreshIndex();
     refresh();
     // Poll continuously: new auto-triggered repairs arrive here, and running ones stream stages.
-    pollRef.current = window.setInterval(refresh, 2500);
+    // Index status is polled too so the RAG-index badge always reflects the backend (and never sticks
+    // on "building" after a build finishes), independent of the one-shot rebuild loop.
+    pollRef.current = window.setInterval(() => { refresh(); refreshIndex(); }, 2500);
     return () => clearInterval(pollRef.current);
   }, [refresh, refreshIndex]);
 
