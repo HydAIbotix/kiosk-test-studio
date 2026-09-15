@@ -382,6 +382,8 @@ export type RepairPrDeleteOutcome = {
 export type RepairStage = {
   stage?: string;
   status?: 'running' | 'done' | 'warn' | 'failed';
+  tool?: string;                // active tool for this stage (e.g. 'GraphRAG + Neo4j', 'Llama · …')
+  note?: string;                // live progress note (e.g. 'Llama diagnosing… 45s / 630s')
   hits?: RepairHit[];            // retrieve
   patch?: RepairPatch;          // diagnose
   file?: string;                // apply

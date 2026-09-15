@@ -111,8 +111,8 @@ export default function AgenticView() {
     { key: 'defect', icon: '🔬', name: 'Defect Intelligence', role: 'Diagnoses failures & writes structured defects',
       engine: 'LangGraph · Claude Opus', status: defectStatus,
       metric: `${defects.length}`, sub: 'defects on latest run' },
-    { key: 'repair', icon: '🛠️', name: 'Auto-Repair', role: 'RAG-finds the bug, Claude fixes it, builds & opens a PR',
-      engine: 'LangGraph · Chroma + Claude', status: repairStatus,
+    { key: 'repair', icon: '🛠️', name: 'Auto-Repair', role: 'RAG finds the bug, the model fixes it, builds & opens a PR',
+      engine: 'LangGraph · RAG + LLM', status: repairStatus,
       metric: `${m.repairsDone}`, sub: `of ${repairs.length} repair${repairs.length === 1 ? '' : 's'} fixed` },
   ];
 

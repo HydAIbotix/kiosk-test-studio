@@ -4,16 +4,19 @@ import { api } from '../api/client';
 import type { RepairJob, RepairStage } from '../api/client';
 
 /** The self-healing arm of defect intelligence. Repairs run AUTOMATICALLY: whenever a test
- *  fails, the backend fires the Auto-Repair agent — RAG (Chroma + HuggingFace) retrieves the
- *  offending code, Claude proposes one minimal patch, the agent applies it, type-checks, builds,
- *  and opens a PR. This page is a live DASHBOARD of those repairs (no manual trigger — the run
- *  that fails is the trigger). The standalone window popped by Live Monitor reuses the same
- *  pipeline view for a single repair. */
+ *  fails, the backend fires the Auto-Repair agent — RAG retrieves the offending code, the model
+ *  proposes one minimal patch, the agent applies it, type-checks, builds, and opens a PR. The
+ *  retrieval and diagnose tools are shown per stage from what actually ran (e.g. GraphRAG + Neo4j
+ *  and a local Llama when the in-house stack is selected). This page is a live DASHBOARD of those
+ *  repairs (no manual trigger — the run that fails is the trigger). The standalone window popped by
+ *  Live Monitor reuses the same pipeline view for a single repair. */
 
 type StageMeta = { key: string; icon: string; label: string; sub: string };
+// `sub` is a fallback shown before a repair reports its tool; the live stage's `tool` (streamed from
+// the backend) overrides it, so the actual retrieval/diagnose tool is shown per repair.
 const STAGES: StageMeta[] = [
-  { key: 'retrieve', icon: '🔎', label: 'Retrieve context', sub: 'Chroma + HuggingFace RAG' },
-  { key: 'diagnose', icon: '🧠', label: 'Diagnose the bug',  sub: 'Claude Opus 4.8' },
+  { key: 'retrieve', icon: '🔎', label: 'Retrieve context', sub: 'semantic code + spec retrieval' },
+  { key: 'diagnose', icon: '🧠', label: 'Diagnose the bug',  sub: 'LLM diagnosis' },
   { key: 'apply',    icon: '🩹', label: 'Apply the fix',     sub: 'single-occurrence patch' },
   { key: 'test',     icon: '🧪', label: 'Unit test',         sub: 'TypeScript type-check' },
   { key: 'build',    icon: '🏗️', label: 'Build',             sub: 'tsc -b + vite build' },
@@ -139,8 +142,8 @@ export default function AutoRepair({ standaloneRepairId }: { standaloneRepairId?
             <h2 style={{ margin: 0, fontSize: 19 }}>Auto-Repair Agent</h2>
             <p className="text-muted" style={{ margin: '4px 0 0', fontSize: 13 }}>
               {standaloneRepairId
-                ? 'Live repair triggered by a failed test — RAG finds the bug, Claude fixes it, then it builds and opens a PR.'
-                : 'Runs automatically whenever a test fails: RAG finds the bug, Claude fixes it, then it type-checks, builds, and opens a PR. Every repair this session is listed below.'}
+                ? 'Live repair triggered by a failed test — RAG finds the bug, the model fixes it, then it builds and opens a PR.'
+                : 'Runs automatically whenever a test fails: RAG finds the bug, the model fixes it, then it type-checks, builds, and opens a PR. Every repair this session is listed below.'}
             </p>
           </div>
           {!standaloneRepairId && <IndexChip index={index} busy={indexBusy} onRebuild={rebuildIndex} />}
@@ -425,9 +428,16 @@ function StageRow({ meta, stage, kind, last }: {
           onClick={() => hasDetail && setOpen(o => !o)}>
           <span style={{ fontSize: 15 }}>{meta.icon}</span>
           <span style={{ fontWeight: 600, fontSize: 14 }}>{meta.label}</span>
-          <span className="text-muted" style={{ fontSize: 11 }}>{meta.sub}</span>
-          {kind === 'running' && <span className="badge badge-blue" style={{ marginLeft: 'auto' }}>working…</span>}
-          {hasDetail && <span className="text-muted" style={{ marginLeft: 'auto', fontSize: 11 }}>{open ? '▲' : '▼'}</span>}
+          {/* Show the tool that actually ran this stage (e.g. GraphRAG + Neo4j, Llama · model) when the
+              backend reports it; fall back to the generic label otherwise. */}
+          <span className="text-muted" style={{ fontSize: 11 }}>{stage?.tool ?? meta.sub}</span>
+          {kind === 'running' && (
+            <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+              {stage?.note && <span className="text-muted" style={{ fontSize: 11 }}>{stage.note}</span>}
+              <span className="badge badge-blue">working…</span>
+            </span>
+          )}
+          {kind !== 'running' && hasDetail && <span className="text-muted" style={{ marginLeft: 'auto', fontSize: 11 }}>{open ? '▲' : '▼'}</span>}
         </div>
         {open && stage && <StageDetail stageKey={meta.key} stage={stage} />}
       </div>
