@@ -88,11 +88,12 @@ export default function LiveMonitor() {
         const rid = String(e.repair_id ?? '');
         const url = `${location.origin}${location.pathname}?repair=${encodeURIComponent(rid)}`;
         setRepair({ repairId: rid, testId: String(e.test_id ?? ''), url });
-        // Prefer a separate window, but browsers block programmatic window.open (no user gesture)
-        // and return null. When blocked, auto-open the repair INLINE in this tab so it still launches
-        // automatically — no popup permission or click needed.
+        // Open as a normal browser tab/window (NO size features) so it gets full window controls —
+        // minimize / maximize / close. A sized `window.open(...,'width=..')` is a chromeless popup that
+        // shows only a Close button. Programmatic opens with no user gesture may still be blocked
+        // (returns null) → auto-open the repair INLINE in this tab so it still launches automatically.
         let win: Window | null = null;
-        try { win = window.open(url, `repair_${rid}`, 'width=1180,height=940'); } catch { win = null; }
+        try { win = window.open(url, `repair_${rid}`); } catch { win = null; }
         if (!win) setInlineRepairId(rid);
         setFeed(f => [...f.slice(-200),
           { ts: new Date().toLocaleTimeString(), text: `🛠 Auto-Repair started for ${e.test_id} — opening the repair view`, cls: 'line-info' },
@@ -187,7 +188,7 @@ export default function LiveMonitor() {
                 : 'Diagnosing with Claude and repairing the code — the repair view opened automatically.'}
             </div>
           </div>
-          <button className="btn btn-primary btn-sm" onClick={() => { const w = window.open(repair.url, `repair_${repair.repairId}`, 'width=1180,height=940'); if (!w) setInlineRepairId(repair.repairId); }}>
+          <button className="btn btn-primary btn-sm" onClick={() => { const w = window.open(repair.url, `repair_${repair.repairId}`); if (!w) setInlineRepairId(repair.repairId); }}>
             ↗ Open repair window
           </button>
           {repair.prUrl && (
