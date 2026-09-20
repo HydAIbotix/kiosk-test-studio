@@ -17,6 +17,11 @@ export default function LiveMonitor() {
   >(null);
   // When the browser blocks the pop-out window (no user gesture), show the repair inline in this tab.
   const [inlineRepairId, setInlineRepairId] = useState<string | null>(null);
+  // The inline repair renders as a floating in-app WINDOW with its own title-bar controls: minimize
+  // (collapse to a docked bar), maximize (fill the viewport) and close. This is what the browser can't
+  // give a blocked programmatic popup (which shows only Close). Reset to 'normal' each time it opens.
+  const [repairWin, setRepairWin] = useState<'normal' | 'min' | 'max'>('normal');
+  useEffect(() => { if (inlineRepairId) setRepairWin('normal'); }, [inlineRepairId]);
   const wsRef   = useRef<WebSocket | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
@@ -154,21 +159,57 @@ export default function LiveMonitor() {
   return (
     <div>
       {inlineRepairId && (
-        <div
-          onClick={() => setInlineRepairId(null)}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.55)',
-            display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 24, overflowY: 'auto',
-          }}
-        >
-          <div onClick={ev => ev.stopPropagation()} className="card"
-               style={{ width: 'min(1180px, 96vw)', maxHeight: '92vh', overflow: 'auto', position: 'relative' }}>
-            <button className="btn btn-secondary btn-sm"
-                    style={{ position: 'absolute', top: 10, right: 10, zIndex: 1 }}
-                    onClick={() => setInlineRepairId(null)}>✕ Close</button>
-            <AutoRepair standaloneRepairId={inlineRepairId} />
+        <>
+          {/* Dim backdrop only when the window is on top (normal/maximized). No click-to-close: a running
+              repair must not be dismissed by an accidental backdrop click — use the ✕ control. */}
+          {repairWin !== 'min' && (
+            <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.55)' }} />
+          )}
+          <div
+            className="card"
+            style={
+              repairWin === 'max'
+                ? { position: 'fixed', inset: 0, zIndex: 1001, borderRadius: 0,
+                    display: 'flex', flexDirection: 'column', overflow: 'hidden' }
+                : repairWin === 'min'
+                ? { position: 'fixed', right: 16, bottom: 16, width: 340, zIndex: 1001, overflow: 'hidden' }
+                : { position: 'fixed', top: '4vh', left: '50%', transform: 'translateX(-50%)',
+                    width: 'min(1180px, 96vw)', maxHeight: '92vh', zIndex: 1001,
+                    display: 'flex', flexDirection: 'column', overflow: 'hidden' }
+            }
+          >
+            {/* Title bar with real window controls: minimize · maximize/restore · close. */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px',
+              borderBottom: repairWin === 'min' ? 'none' : '1px solid var(--border)', flexShrink: 0,
+            }}>
+              <span style={{ fontSize: 15 }}>🛠️</span>
+              <span
+                onClick={() => repairWin === 'min' && setRepairWin('normal')}
+                title={repairWin === 'min' ? 'Restore' : undefined}
+                style={{ fontWeight: 600, fontSize: 13, flex: 1, whiteSpace: 'nowrap',
+                         overflow: 'hidden', textOverflow: 'ellipsis',
+                         cursor: repairWin === 'min' ? 'pointer' : 'default' }}>
+                Auto-Repair — {repair?.testId || inlineRepairId}
+              </span>
+              {repairWin !== 'min' && (
+                <button className="btn btn-secondary btn-sm" title="Minimize"
+                        onClick={() => setRepairWin('min')}>—</button>
+              )}
+              <button className="btn btn-secondary btn-sm"
+                      title={repairWin === 'max' ? 'Restore' : 'Maximize'}
+                      onClick={() => setRepairWin(repairWin === 'max' ? 'normal' : 'max')}>
+                {repairWin === 'max' ? '❐' : '▢'}
+              </button>
+              <button className="btn btn-secondary btn-sm" title="Close"
+                      onClick={() => setInlineRepairId(null)}>✕</button>
+            </div>
+            {/* Body — kept mounted while minimized (display:none) so the repair keeps streaming. */}
+            <div style={{ display: repairWin === 'min' ? 'none' : 'block', overflow: 'auto', flex: 1 }}>
+              <AutoRepair standaloneRepairId={inlineRepairId} />
+            </div>
           </div>
-        </div>
+        </>
       )}
       {repair && (
         <div className="card section" style={{

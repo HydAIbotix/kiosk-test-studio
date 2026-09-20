@@ -379,14 +379,19 @@ export type RepairPrOutcome = {
 export type RepairPrDeleteOutcome = {
   deleted: boolean; remote_deleted?: boolean; branch?: string; output?: string;
 };
+export type RcaVerdict = 'code_bug' | 'spec_bug' | 'test_invalid' | 'skipped';
+export type RepairRca = {
+  verdict?: RcaVerdict; confidence?: string; rationale?: string; suspect?: string; stop?: boolean;
+};
 export type RepairStage = {
   stage?: string;
   status?: 'running' | 'done' | 'warn' | 'failed';
   tool?: string;                // active tool for this stage (e.g. 'GraphRAG + Neo4j', 'Llama · …')
   note?: string;                // live progress note (e.g. 'Llama diagnosing… 45s / 630s')
-  hits?: RepairHit[];            // retrieve
+  hits?: RepairHit[];            // retrieve / rca (docs read)
   patch?: RepairPatch;          // diagnose
   file?: string;                // apply
+  verdict?: RcaVerdict; confidence?: string; rationale?: string; suspect?: string; stop?: boolean;   // rca
   ok?: boolean; code?: number; output?: string; cmd?: string;   // test / build
   prepared?: boolean; branch?: string; base?: string; remote?: string;   // pr
   commit?: string; title?: string; body?: string; diff?: string;
@@ -395,12 +400,13 @@ export type RepairStage = {
 };
 export type RepairJob = {
   repair_id: string;
-  status: 'pending' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'completed' | 'failed' | 'rca_stopped';
   auto?: boolean;              // true → auto-triggered by a failed test run
   failure: string; test_id?: string; run_id?: string | null;
   created_at?: string; updated_at?: string; error?: string;
+  rca?: RepairRca;             // the RCA agent's verdict (present when it ran)
   stages?: Record<string, RepairStage>;
-  result?: { success?: boolean; dry_run?: boolean; stages?: Record<string, RepairStage> };
+  result?: { success?: boolean; dry_run?: boolean; rca_stopped?: boolean; rca?: RepairRca; stages?: Record<string, RepairStage> };
 };
 
 export function runWs(run_id: string, onEvent: (e: unknown) => void) {

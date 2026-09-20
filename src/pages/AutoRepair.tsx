@@ -11,17 +11,24 @@ import type { RepairJob, RepairStage } from '../api/client';
  *  repairs (no manual trigger — the run that fails is the trigger). The standalone window popped by
  *  Live Monitor reuses the same pipeline view for a single repair. */
 
-type StageMeta = { key: string; icon: string; label: string; sub: string };
-// `sub` is a fallback shown before a repair reports its tool; the live stage's `tool` (streamed from
-// the backend) overrides it, so the actual retrieval/diagnose tool is shown per repair.
+type StageMeta = { key: string; icon: string; label: string; sub: string; agent: 'rca' | 'fix' };
+// Two SEPARATE agents: the RCA agent decides code vs spec/test bug (and can STOP), then the code-fixing
+// agent retrieves code, patches, tests, builds and opens a PR. `sub` is a fallback shown before a repair
+// reports its tool; the live stage's `tool` (streamed from the backend) overrides it.
 const STAGES: StageMeta[] = [
-  { key: 'retrieve', icon: '🔎', label: 'Retrieve context', sub: 'semantic code + spec retrieval' },
-  { key: 'diagnose', icon: '🧠', label: 'Diagnose the bug',  sub: 'LLM diagnosis' },
-  { key: 'apply',    icon: '🩹', label: 'Apply the fix',     sub: 'single-occurrence patch' },
-  { key: 'test',     icon: '🧪', label: 'Unit test',         sub: 'TypeScript type-check' },
-  { key: 'build',    icon: '🏗️', label: 'Build',             sub: 'tsc -b + vite build' },
-  { key: 'pr',       icon: '🔀', label: 'Raise PR',          sub: 'branch + commit + diff' },
+  { key: 'rca',      icon: '🕵️', label: 'Root-cause analysis', sub: 'reads docs + test case — spec/test vs code', agent: 'rca' },
+  { key: 'retrieve', icon: '🔎', label: 'Retrieve code',       sub: 'code-only vector RAG', agent: 'fix' },
+  { key: 'diagnose', icon: '🧠', label: 'Diagnose the bug',    sub: 'LLM diagnosis', agent: 'fix' },
+  { key: 'apply',    icon: '🩹', label: 'Apply the fix',       sub: 'single-occurrence patch', agent: 'fix' },
+  { key: 'test',     icon: '🧪', label: 'Unit test',           sub: 'TypeScript type-check', agent: 'fix' },
+  { key: 'build',    icon: '🏗️', label: 'Build',               sub: 'tsc -b + vite build', agent: 'fix' },
+  { key: 'pr',       icon: '🔀', label: 'Raise PR',            sub: 'branch + commit + diff', agent: 'fix' },
 ];
+
+const AGENT_META: Record<'rca' | 'fix', { num: string; name: string; blurb: string }> = {
+  rca: { num: '①', name: 'RCA Agent', blurb: 'reads the design docs + test case, decides code bug vs spec/test bug' },
+  fix: { num: '②', name: 'Code-Fixing Agent', blurb: 'retrieves code, patches the bug, type-checks, builds and opens a PR' },
+};
 
 type StatusKind = 'pending' | 'running' | 'done' | 'warn' | 'failed';
 
@@ -142,8 +149,8 @@ export default function AutoRepair({ standaloneRepairId }: { standaloneRepairId?
             <h2 style={{ margin: 0, fontSize: 19 }}>Auto-Repair Agent</h2>
             <p className="text-muted" style={{ margin: '4px 0 0', fontSize: 13 }}>
               {standaloneRepairId
-                ? 'Live repair triggered by a failed test — RAG finds the bug, the model fixes it, then it builds and opens a PR.'
-                : 'Runs automatically whenever a test fails: RAG finds the bug, the model fixes it, then it type-checks, builds, and opens a PR. Every repair this session is listed below.'}
+                ? 'Two agents: the RCA agent checks the docs + test case (is it a code, spec or test bug?), then the code-fixing agent retrieves the code, patches it, builds and opens a PR.'
+                : 'Runs automatically whenever a test fails. Two agents work in sequence: ① the RCA agent reads the design docs + test case and decides whether it is a code bug (or a spec / invalid-test problem it should stop on); ② the code-fixing agent then retrieves the code, patches it, type-checks, builds and opens a PR. Every repair this session is listed below.'}
             </p>
           </div>
           {!standaloneRepairId && <IndexChip index={index} busy={indexBusy} onRebuild={rebuildIndex} />}
@@ -262,7 +269,9 @@ function RepairPipeline({ job, running, onUpdated }: {
     const st = stages[s.key]?.status;
     return st !== 'done' && st !== 'warn';
   });
-  const done = job.status === 'succeeded' || job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled';
+  const done = job.status === 'succeeded' || job.status === 'completed' || job.status === 'failed'
+    || job.status === 'cancelled' || job.status === 'rca_stopped';
+  const rcaStage = stages['rca'];
   const buildStage = stages['build'];
   const prStage    = stages['pr'];
   const succeeded  = job.status === 'succeeded' || buildStage?.ok === true;
@@ -296,7 +305,14 @@ function RepairPipeline({ job, running, onUpdated }: {
           const st = stages[meta.key];
           const isActive = running && i === firstIncomplete;
           const kind = statusOf(st, isActive);
-          return <StageRow key={meta.key} meta={meta} stage={st} kind={kind} last={i === STAGES.length - 1} />;
+          // A header before the FIRST stage of each agent makes the two-agent design explicit.
+          const showAgentHeader = i === 0 || STAGES[i - 1].agent !== meta.agent;
+          return (
+            <div key={meta.key}>
+              {showAgentHeader && <AgentHeader agent={meta.agent} />}
+              <StageRow meta={meta} stage={st} kind={kind} last={i === STAGES.length - 1} />
+            </div>
+          );
         })}
       </div>
 
@@ -351,6 +367,17 @@ function RepairPipeline({ job, running, onUpdated }: {
                 Repair was cancelled — no changes were committed. Re-run the failed test to try again.
               </span>
             </div>
+          ) : job.status === 'rca_stopped' ? (
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+              <span className="badge badge-yellow">
+                🛑 {rcaStage?.verdict === 'test_invalid' ? 'Test is invalid' : 'Spec/requirements bug'}
+              </span>
+              <span className="text-muted" style={{ fontSize: 13, flex: 1, minWidth: 240 }}>
+                The RCA agent stopped the repair before touching code: {rcaStage?.rationale
+                  || job.rca?.rationale || 'the failure is in the spec or the test, not the app code.'}
+                {' '}No code was changed — fix the {rcaStage?.verdict === 'test_invalid' ? 'test case' : 'design/requirements'} and re-run.
+              </span>
+            </div>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span className="badge badge-red">✕ Repair incomplete</span>
@@ -388,16 +415,28 @@ function IndexChip({ index, busy, onRebuild }: {
 
 function OverallBadge({ status }: { status: RepairJob['status'] }) {
   const map: Record<RepairJob['status'], [string, string]> = {
-    pending:    ['badge-muted',  'Pending'],
-    running:    ['badge-blue',   '◐ Running'],
-    cancelling: ['badge-yellow', '◐ Cancelling…'],
-    cancelled:  ['badge-muted',  '⨯ Cancelled'],
-    succeeded:  ['badge-green',  '✓ Succeeded'],
-    completed:  ['badge-yellow', 'Completed'],
-    failed:     ['badge-red',    '✕ Failed'],
+    pending:     ['badge-muted',  'Pending'],
+    running:     ['badge-blue',   '◐ Running'],
+    cancelling:  ['badge-yellow', '◐ Cancelling…'],
+    cancelled:   ['badge-muted',  '⨯ Cancelled'],
+    succeeded:   ['badge-green',  '✓ Succeeded'],
+    completed:   ['badge-yellow', 'Completed'],
+    failed:      ['badge-red',    '✕ Failed'],
+    rca_stopped: ['badge-yellow', '🛑 RCA stopped'],
   };
   const [cls, label] = map[status] || ['badge-muted', status];
   return <span className={`badge ${cls}`}>{label}</span>;
+}
+
+// A labelled divider that makes the TWO separate agents explicit in the pipeline.
+function AgentHeader({ agent }: { agent: 'rca' | 'fix' }) {
+  const m = AGENT_META[agent];
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: '4px 0 10px', flexWrap: 'wrap' }}>
+      <span style={{ fontWeight: 700, fontSize: 13 }}>{m.num} {m.name}</span>
+      <span className="text-muted" style={{ fontSize: 11 }}>{m.blurb}</span>
+    </div>
+  );
 }
 
 function StageRow({ meta, stage, kind, last }: {
@@ -451,6 +490,45 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
     borderRadius: 6, padding: 10, fontFamily: 'monospace', fontSize: 12,
     whiteSpace: 'pre-wrap', overflowX: 'auto', maxHeight: 280,
   };
+
+  if (stageKey === 'rca') {
+    const vmap: Record<string, [string, string]> = {
+      code_bug:     ['badge-blue',   'Code bug'],
+      spec_bug:     ['badge-yellow', 'Spec/requirements bug'],
+      test_invalid: ['badge-yellow', 'Test is invalid'],
+      skipped:      ['badge-muted',  'RCA skipped'],
+    };
+    const [vcls, vlabel] = vmap[stage.verdict || 'skipped'] || ['badge-muted', stage.verdict || '—'];
+    return (
+      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 }}>
+          <span className={`badge ${vcls}`}>{vlabel}</span>
+          {stage.confidence && <span className="text-muted">confidence: {stage.confidence}</span>}
+          {stage.stop && <span className="badge badge-red">stopped the repair</span>}
+        </div>
+        {stage.rationale && <div style={{ fontSize: 12 }}>💬 {stage.rationale}</div>}
+        {stage.suspect && (
+          <div className="text-muted" style={{ fontSize: 12 }}>
+            🎯 suspect area handed to the code-fixing agent: <strong>{stage.suspect}</strong>
+          </div>
+        )}
+        {stage.hits && stage.hits.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div className="text-muted" style={{ fontSize: 11 }}>Docs / test cases the RCA agent read (no source code):</div>
+            {stage.hits.map((h, i) => (
+              <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                <div style={{ padding: '6px 10px', background: 'var(--surface2)', fontSize: 11, display: 'flex', gap: 8 }}>
+                  <span className="badge badge-muted">{h.type}</span>
+                  <span className="text-muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.file}</span>
+                </div>
+                <pre style={{ margin: 0, padding: 10, fontSize: 11, maxHeight: 120, overflow: 'auto' }}>{h.snippet}</pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (stageKey === 'retrieve' && stage.hits) {
     return (
