@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type TestCase, type TcConfig, type TcPlan, type TcPlanStep } from '../api/client';
+import { api, annotatedScreenshotUrl, type TestCase, type TcConfig, type TcPlan, type TcPlanStep } from '../api/client';
 
 // ── Plan storage key ───────────────────────────────────────────────────────────
 const PLAN_KEY = (id: string) => `tc_plan_${id}`;
@@ -51,13 +51,28 @@ function ChannelBadge({ ch }: { ch: string }) {
 
 // ── Plan viewer / editor ───────────────────────────────────────────────────────
 
-function PlanStep({ step, idx }: { step: TcPlanStep; idx: number }) {
+// A click/type step points at a concrete UI element — show the annotated exploration screenshot of that
+// screen (the same labelled frame the explorer produced) as a thumbnail; click to enlarge.
+function isInteractionStep(step: TcPlanStep): boolean {
+  const a = (step.action || '').toLowerCase();
+  return /tap|click|type|press|select|enter/.test(a) || (step.px != null && step.py != null) || !!step.element_id;
+}
+
+function PlanStep({ step, idx, shotFor }: { step: TcPlanStep; idx: number; shotFor?: (screenId?: string) => string | undefined }) {
   const ch = CH[step.channel as Channel] ?? CH.robot;
   const isRobot = step.channel === 'robot';
   const hasCo   = isRobot && step.px != null && step.py != null;
+  const [zoom, setZoom] = useState(false);
+  const shot = isInteractionStep(step) ? shotFor?.(step.screen_id) : undefined;
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, padding: '6px 10px', fontSize: 12 }}>
       <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 20, paddingTop: 2 }}>{idx + 1}.</span>
+      {shot && (
+        <img src={annotatedScreenshotUrl(shot)} alt={`${step.screen_id} annotated`} onClick={() => setZoom(true)}
+          title="Click to enlarge the annotated screenshot"
+          style={{ width: 54, height: 40, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)',
+            cursor: 'zoom-in', flexShrink: 0, background: '#000' }} />
+      )}
       <div style={{ flex: 1, lineHeight: 1.6 }}>
         <span style={{ color: 'var(--text)' }}>{step.description}</span>
         {hasCo && (
@@ -73,6 +88,20 @@ function PlanStep({ step, idx }: { step: TcPlanStep; idx: number }) {
         )}
       </div>
       <ChannelBadge ch={step.channel} />
+      {zoom && shot && (
+        <div onClick={() => setZoom(false)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.8)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, cursor: 'zoom-out' }}>
+          <div onClick={e => e.stopPropagation()} style={{ maxWidth: '92vw', maxHeight: '92vh', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff', fontSize: 13 }}>
+              <span>Step {idx + 1} · {step.screen_id}{step.element_id ? ` · ${step.element_id}` : ''}</span>
+              <button className="btn btn-secondary btn-sm" onClick={() => setZoom(false)}>✕ Close</button>
+            </div>
+            <img src={annotatedScreenshotUrl(shot)} alt={`${step.screen_id} annotated`}
+              style={{ maxWidth: '92vw', maxHeight: '84vh', objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)' }} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -93,11 +122,26 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
 
   // Per-selected-TC plan state
   const [plan,       setPlan]     = useState<TcPlan | null>(null);
+  const [annShots,   setAnnShots] = useState<Record<string, string[]>>({});
   const [planStatus, setPlanSt]   = useState<'idle'|'loading'|'ready'|'error'>('idle');
   const [planErr,    setPlanErr]  = useState('');
   const [planEditing,setPlanEd]   = useState(false);
   const [editedSteps,setEditedSt] = useState<TcPlanStep[]>([]);
   const [planSaved,  setPlanSaved]= useState(false);
+  const [hrTestPlan, setHrTestPlan]= useState(false);
+  const [hrExplorer, setHrExplorer]= useState(false);
+  const [explorerOk, setExplorerOk]= useState(true);
+  const [planApproved, setPlanApproved]= useState(false);
+  const [planRejecting, setPlanRejecting]= useState(false);
+  const [planReason, setPlanReason]= useState('');
+
+  useEffect(() => {
+    api.getConfig().then(c => {
+      setHrTestPlan(!!c.human_review?.test_plan);
+      setHrExplorer(!!c.human_review?.explorer);
+    }).catch(() => {});
+    try { setExplorerOk(localStorage.getItem('explorer_approved') === '1'); } catch { /* ignore */ }
+  }, []);
 
   const load = () => api.getTestCases().then(cs => {
     setCases(cs);
@@ -106,6 +150,14 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   });
   useEffect(() => { load(); }, []);
   useEffect(() => { api.saveSelectedTcs(Array.from(checked)); }, [checked]);
+  // Annotated exploration screenshots (screen_id → filenames) — attached as per-step thumbnails in the plan.
+  useEffect(() => { api.getAnnotatedScreenshots().then(setAnnShots).catch(() => setAnnShots({})); }, []);
+  // Newest annotated frame for a screen (filenames sort lexicographically with a trailing timestamp).
+  const shotFor = (screenId?: string): string | undefined => {
+    if (!screenId) return undefined;
+    const list = annShots[screenId];
+    return list && list.length ? [...list].sort().slice(-1)[0] : undefined;
+  };
 
   const upload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -146,9 +198,10 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
     setTimeout(() => setCfgSaved(false), 2000);
   };
 
-  // Fetch or load plan for a test case
-  const fetchPlan = async (tc: TestCase, force = false) => {
+  // Fetch or load plan for a test case. `feedback` (human_review_test_plan reject reason) steers a regenerate.
+  const fetchPlan = async (tc: TestCase, force = false, feedback = '') => {
     setPlan(null); setPlanSt('loading'); setPlanErr(''); setPlanEd(false);
+    setPlanApproved(false); setPlanRejecting(false); setPlanReason('');
 
     if (!force) {
       const cached = loadCachedPlan(tc.test_id, tc);
@@ -161,6 +214,7 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
         description: tc.description, steps_raw: tc.steps_raw,
         expected_results_raw: tc.expected_results_raw,
         ...(force ? { force: true } : {}),
+        ...(feedback ? { review_feedback: feedback } : {}),
       });
       saveCachedPlan(tc.test_id, p, tc);
       setPlan(p); setPlanSt('ready');
@@ -170,10 +224,16 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
     }
   };
 
+  const submitPlanReject = () => {
+    if (selected && planReason.trim()) fetchPlan(selected, true, planReason.trim());
+  };
+
   const selectTc = (tc: TestCase) => {
     setSel(tc); setPlanEd(false); setPlanSaved(false);
     const saved = api.getTcConfig(tc.test_id);
     if (saved) setTcConfigs(prev => ({ ...prev, [tc.test_id]: saved }));
+    // Gate (human_review_explorer): don't generate a plan until the exploration is approved.
+    if (hrExplorer && !explorerOk) { setPlan(null); setPlanSt('idle'); return; }
     fetchPlan(tc);
   };
 
@@ -400,11 +460,49 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
                   </div>
                 )}
 
-                {/* View mode */}
-                {planStatus === 'ready' && plan && !planEditing && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {plan.steps.map((s, i) => <PlanStep key={i} step={s} idx={i} />)}
+                {/* Gate: exploration must be approved first (human_review_explorer) */}
+                {hrExplorer && !explorerOk && (
+                  <div className="card card-sm" style={{ borderColor: 'var(--yellow)', background: 'rgba(234,179,8,0.08)' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>⏸ Approve the exploration first</div>
+                    <p className="text-muted" style={{ fontSize: 12 }}>
+                      Human review is on for App Explorer. Approve the latest exploration on the
+                      <strong> App Explorer</strong> page before generating test plans.
+                    </p>
+                    <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => onNav('explorer')}>Go to App Explorer →</button>
                   </div>
+                )}
+
+                {/* View mode */}
+                {planStatus === 'ready' && plan && !planEditing && (!hrExplorer || explorerOk) && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {plan.steps.map((s, i) => <PlanStep key={i} step={s} idx={i} shotFor={shotFor} />)}
+                  </div>
+                )}
+
+                {/* Test-plan human review (human_review_test_plan) */}
+                {planStatus === 'ready' && plan && !planEditing && hrTestPlan && !planApproved && (!hrExplorer || explorerOk) && (
+                  <div className="card card-sm" style={{ marginTop: 8, borderColor: 'var(--yellow)', background: 'rgba(234,179,8,0.08)' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>⏸ Review this test plan</div>
+                    {!planRejecting ? (
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button className="btn btn-primary btn-sm" onClick={() => setPlanApproved(true)}>✓ Approve plan</button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => setPlanRejecting(true)}>✕ Reject</button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <textarea value={planReason} onChange={e => setPlanReason(e.target.value)} rows={3}
+                          placeholder="What's wrong with this plan? It's applied when the plan regenerates."
+                          style={{ width: '100%', fontSize: 13, padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', resize: 'vertical' }} />
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button className="btn btn-danger btn-sm" onClick={submitPlanReject} disabled={!planReason.trim()}>Submit reject &amp; regenerate</button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => { setPlanRejecting(false); setPlanReason(''); }}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {planStatus === 'ready' && plan && hrTestPlan && planApproved && (
+                  <div style={{ fontSize: 12, color: 'var(--green)', marginTop: 6 }}>✓ Plan approved</div>
                 )}
 
                 {/* Edit mode */}
@@ -429,7 +527,7 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
                   </div>
                 )}
 
-                {planStatus === 'idle' && (
+                {planStatus === 'idle' && (!hrExplorer || explorerOk) && (
                   <button className="btn btn-primary btn-sm" onClick={() => fetchPlan(selected)} style={{ marginTop: 4 }}>
                     Generate Plan with Claude
                   </button>

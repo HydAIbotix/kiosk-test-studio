@@ -10,12 +10,32 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
   const [clearing,   setClearing]  = useState(false);
   const [confirmClear, setConfirm] = useState<string>('');   // '' | 'ALL' | <app_id>
   const [clearMsg,   setClearMsg]  = useState('');
+  const [hrExplorer, setHrExplorer]= useState(false);        // human_review_explorer gate is ON
+  const [rejecting,  setRejecting] = useState(false);
+  const [reason,     setReason]    = useState('');
+  const [approved,   setApproved]  = useState(false);        // this exploration approved this session
   const exploreIdRef = useRef('');
   const pollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const approvalKey  = 'explorer_approved';           // global gate for the Test Plan page
+  const rejectKey    = `explorer_reject_${kioskId}`;  // per-app feedback for the next exploration
 
   useEffect(() => {
     api.getAppMap().then(m => { if (m.exists) setExisting(m); });
-  }, []);
+    api.getConfig().then(c => setHrExplorer(!!c.human_review?.explorer)).catch(() => {});
+    try { setApproved(localStorage.getItem('explorer_approved') === '1'); } catch { /* ignore */ }
+  }, [kioskId]);
+
+  const approveExploration = () => {
+    try { localStorage.setItem(approvalKey, '1'); localStorage.removeItem(rejectKey); } catch { /* ignore */ }
+    setApproved(true); setRejecting(false); setReason('');
+    setMessage('✓ Exploration approved — you can now generate test plans.');
+  };
+  const submitReject = () => {
+    if (!reason.trim()) return;
+    try { localStorage.setItem(rejectKey, reason.trim()); localStorage.removeItem(approvalKey); } catch { /* ignore */ }
+    setApproved(false); setRejecting(false);
+    setMessage('Rejected — your reason will be applied the next time you run Explore.');
+  };
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -28,8 +48,13 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
     setStatus('running');
     setMessage('Explorer launched — Playwright is navigating the kiosk. This takes 2–5 minutes.');
     setConfirm(''); setClearMsg('');
+    // A prior reject reason (human_review_explorer) is folded into this exploration, then cleared. A fresh
+    // exploration is un-reviewed until approved again.
+    let feedback = '';
+    try { feedback = localStorage.getItem(rejectKey) || ''; localStorage.removeItem(approvalKey); localStorage.removeItem(rejectKey); } catch { /* ignore */ }
+    setApproved(false); setRejecting(false); setReason('');
     try {
-      const res = await api.startExplore(kioskUrl, kioskId);
+      const res = await api.startExplore(kioskUrl, kioskId, feedback || undefined);
       exploreIdRef.current = res.explore_id;
 
       // Poll every 4 s until the backend reports done or error
@@ -213,6 +238,38 @@ export default function AppExplorer({ onNav }: { onNav: (p: string) => void }) {
             }}>
               <p style={{ fontSize: 13 }}>{message}</p>
               {status === 'done' && <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => onNav('app-map')}>View App Map →</button>}
+            </div>
+          )}
+          {/* Human review gate (human_review_explorer) — Approve unlocks Test Plan; Reject captures a reason. */}
+          {status === 'done' && hrExplorer && !approved && (
+            <div className="card card-sm" style={{ marginTop: 14, borderColor: 'var(--yellow)', background: 'rgba(234,179,8,0.08)' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>⏸ Review required</div>
+              <p className="text-muted" style={{ fontSize: 12, marginBottom: 10 }}>
+                Review the App Map. You can't generate test plans until this exploration is approved. Reject to
+                record what to improve — it's folded into the next exploration.
+              </p>
+              {!rejecting ? (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-primary btn-sm" onClick={approveExploration}>✓ Approve exploration</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setRejecting(true)}>✕ Reject</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => onNav('app-map')}>View App Map →</button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3}
+                    placeholder="What was missed or wrong? (e.g. 'the top-up reader button wasn't mapped')"
+                    style={{ width: '100%', fontSize: 13, padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', resize: 'vertical' }} />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-danger btn-sm" onClick={submitReject} disabled={!reason.trim()}>Submit reject</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => { setRejecting(false); setReason(''); }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {status === 'done' && hrExplorer && approved && (
+            <div className="card card-sm" style={{ marginTop: 14, borderColor: 'var(--green)', background: 'rgba(34,197,94,0.08)' }}>
+              <p style={{ fontSize: 13 }}>✓ Exploration approved — test plan generation is unlocked.</p>
             </div>
           )}
         </div>

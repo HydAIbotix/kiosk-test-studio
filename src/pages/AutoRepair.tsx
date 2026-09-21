@@ -328,6 +328,8 @@ function RepairPipeline({ job, running, onUpdated }: {
         })}
       </div>
 
+      {job.status === 'awaiting_rca_review' && <RcaReviewPanel job={job} onUpdated={onUpdated} />}
+
       {done && (
         <div style={{ padding: '14px 18px', borderTop: '1px solid var(--border)',
           background: succeeded ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)' }}>
@@ -405,6 +407,64 @@ function RepairPipeline({ job, running, onUpdated }: {
   );
 }
 
+// ── RCA human-review gate (shown when human_review_rca is ON and the pipeline paused) ───────────
+function RcaReviewPanel({ job, onUpdated }: { job: RepairJob; onUpdated: () => void }) {
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const rca = mergedStages(job)['rca'] || job.rca || {};
+  const vlabel: Record<string, string> = {
+    code_bug: 'Code bug', spec_bug: 'Requirements / spec bug', test_invalid: 'Invalid test case',
+    environment: 'Environment / infra issue', unknown: 'Undetermined',
+  };
+
+  const decide = async (decision: 'approve' | 'reject') => {
+    if (decision === 'reject' && !reason.trim()) { setErr('Please enter a reason to reject.'); return; }
+    setBusy(decision); setErr('');
+    try { await api.reviewRepairRca(job.repair_id, decision, reason.trim()); onUpdated(); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Review failed'); }
+    finally { setBusy(''); }
+  };
+
+  return (
+    <div style={{ padding: '14px 18px', borderTop: '1px solid var(--border)', background: 'rgba(234,179,8,0.08)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+        <span className="badge badge-yellow">⏸ Review the root cause</span>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{vlabel[rca.verdict || ''] || rca.verdict || '—'}</span>
+        {rca.confidence && <span className="text-muted" style={{ fontSize: 12 }}>{rca.confidence} confidence</span>}
+      </div>
+      {rca.rationale && <div style={{ fontSize: 12.5, marginBottom: 6 }}>💬 {rca.rationale}</div>}
+      {rca.suspect && <div className="text-muted" style={{ fontSize: 12, marginBottom: 8 }}>🎯 Suspect: {rca.suspect}</div>}
+      <div className="text-muted" style={{ fontSize: 12, marginBottom: 10 }}>
+        The code-fixing agent will run only after you approve. Reject to send the RCA agent your reason and have it re-analyse.
+      </div>
+      {!rejecting ? (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-primary btn-sm" disabled={!!busy} onClick={() => decide('approve')}>
+            {busy === 'approve' ? '◐ Approving…' : '✓ Approve → run the fix'}
+          </button>
+          <button className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => setRejecting(true)}>✕ Reject</button>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3}
+            placeholder="Why is this root cause wrong? The RCA agent will reconsider with this feedback."
+            style={{ width: '100%', fontSize: 13, padding: 8, borderRadius: 6, border: '1px solid var(--border)',
+              background: 'var(--bg)', color: 'var(--text)', fontFamily: 'inherit', resize: 'vertical' }} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-danger btn-sm" disabled={busy === 'reject'} onClick={() => decide('reject')}>
+              {busy === 'reject' ? '◐ Re-analysing…' : 'Submit reject & re-run RCA'}
+            </button>
+            <button className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => { setRejecting(false); setReason(''); setErr(''); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {err && <div style={{ fontSize: 12, marginTop: 8, color: 'var(--red)' }}>✕ {err}</div>}
+    </div>
+  );
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function IndexChip({ index, busy, onRebuild }: {
@@ -435,6 +495,7 @@ function OverallBadge({ status }: { status: RepairJob['status'] }) {
     completed:   ['badge-yellow', 'Completed'],
     failed:      ['badge-red',    '✕ Failed'],
     rca_stopped: ['badge-yellow', '🛑 RCA stopped'],
+    awaiting_rca_review: ['badge-yellow', '⏸ Awaiting review'],
   };
   const [cls, label] = map[status] || ['badge-muted', status];
   return <span className={`badge ${cls}`}>{label}</span>;
@@ -1095,11 +1156,12 @@ function SummaryStepper({ job, stages, onJump }: {
         return (
           <button key={meta.key} onClick={() => onJump(`sec-${meta.key}`)} title={`${meta.label} — ${kind}`}
             style={{ flex: '1 1 92px', minWidth: 92, border: `1px solid ${dot.ring}`, borderRadius: 8, cursor: 'pointer',
+              color: 'var(--text)',   // native <button> resets text colour → set it explicitly or the label is invisible
               background: kind === 'done' ? 'rgba(34,197,94,0.08)' : kind === 'failed' ? 'rgba(239,68,68,0.08)'
                 : kind === 'running' ? 'rgba(59,130,246,0.10)' : 'var(--surface)',
               padding: '8px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
             <span style={{ fontSize: 16 }}>{meta.icon}</span>
-            <span style={{ fontSize: 10.5, fontWeight: 600, textAlign: 'center', lineHeight: 1.15 }}>{meta.label}</span>
+            <span style={{ fontSize: 10.5, fontWeight: 600, textAlign: 'center', lineHeight: 1.15, color: 'var(--text)' }}>{meta.label}</span>
             <span style={{ color: dot.color, fontSize: 12, fontWeight: 700 }}>{dot.glyph}</span>
           </button>
         );

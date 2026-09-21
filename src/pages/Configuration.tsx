@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Config, type KioskConfig, type DeviceConfig, type ExploreConfig } from '../api/client';
+import { api, type Config, type KioskConfig, type DeviceConfig, type ExploreConfig, type HumanReview } from '../api/client';
 
 const BLANK_KIOSK: KioskConfig = {
   kiosk_id: '', name: '', url: 'http://localhost:5173', robot_id: 'R-01',
@@ -38,12 +38,22 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
   const [repairLlm,    setRepairLlm]  = useState<'claude'|'local'>('claude');
   const [repairSaving, setRepairSav]  = useState(false);
   const [repairMsg,    setRepairMsg]  = useState('');
+  const [hr,           setHr]         = useState<HumanReview>({ explorer: false, test_plan: false, rca: false });
+  const [hrMsg,        setHrMsg]      = useState('');
+
+  const toggleReview = async (key: keyof HumanReview, val: boolean) => {
+    const prev = hr;
+    setHr({ ...hr, [key]: val }); setHrMsg('');
+    try { const r = await api.setHumanReview({ [key]: val }); setHr(r.human_review); setHrMsg('✓ Saved'); }
+    catch { setHr(prev); setHrMsg('✕ Could not save'); }
+  };
 
   const reload = () => api.getConfig().then(c => {
     setConfig(c);
     setRobotForm({ robot_backend: c.robot_backend, robot_ip: c.robot_ip, robot_port: c.robot_port, agv_url: c.agv_url || '', arm_url: c.arm_url || '', agv_home_target: c.agv_home_target || '' });
     setCardSvc(c.card_service_url || '');
     setRepairLlm((c.repair_llm?.backend as 'claude'|'local') || 'claude');
+    setHr(c.human_review || { explorer: false, test_plan: false, rca: false });
     if (c.kiosks.length > 0) setKiosk(c.kiosks[0]);
   });
 
@@ -419,6 +429,38 @@ export default function Configuration({ onNav }: { onNav?: (p: string) => void }
             </span>
           )}
         </div>
+      </div>
+
+      {/* ── Human Review (Approve / Reject gates) ──────────────────────────── */}
+      <div className="card section">
+        <div className="section-title">Human Review</div>
+        <p className="text-muted" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.6 }}>
+          Optional Approve / Reject checkpoints. Each is <strong>off by default</strong> — when off, the flow
+          runs exactly as today. When on, you review that stage's output before it proceeds; a
+          <strong> Reject</strong> asks for a reason that is fed back to improve the next attempt.
+        </p>
+        {([
+          { key: 'explorer' as const,  title: 'App Explorer',
+            desc: 'Review the exploration result. You cannot move to Test Plan until it is approved; a reject reason is folded into the next exploration.' },
+          { key: 'test_plan' as const, title: 'Test Plan',
+            desc: 'Review a generated test plan. A reject reason is applied when you Regenerate that plan.' },
+          { key: 'rca' as const,       title: 'RCA (Auto-Repair)',
+            desc: 'Review the root-cause verdict BEFORE the code-fixing agent runs. Reject retries RCA with your reason; the fixer is not called until you approve.' },
+        ]).map(row => (
+          <label key={row.key} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '10px 0',
+            borderTop: '1px solid var(--border)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={!!hr[row.key]} style={{ marginTop: 3, width: 16, height: 16 }}
+              onChange={e => toggleReview(row.key, e.target.checked)} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{row.title}
+                <span className={`badge ${hr[row.key] ? 'badge-green' : 'badge-muted'}`} style={{ marginLeft: 8, fontSize: 10 }}>
+                  {hr[row.key] ? 'ON' : 'OFF'}</span>
+              </div>
+              <div className="text-muted" style={{ fontSize: 12, marginTop: 2 }}>{row.desc}</div>
+            </div>
+          </label>
+        ))}
+        {hrMsg && <div style={{ fontSize: 12, marginTop: 8, color: hrMsg.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>{hrMsg}</div>}
       </div>
 
       {/* ── Device Map ─────────────────────────────────────────────────────── */}

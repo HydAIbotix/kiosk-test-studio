@@ -84,7 +84,7 @@ export const api = {
   clearAppMap: ()                  => req('/app-map', {method:'DELETE'}),
   clearAppMapApp: (app_id: string) => req(`/app-map/${encodeURIComponent(app_id)}`, {method:'DELETE'}),
   resetAll:    (signal?: AbortSignal) => req<{status:string;message:string}>('/reset', {method:'POST', _signal: signal}, 30_000),
-  startExplore:    (kiosk_url:string, kiosk_id?:string) => req<{explore_id:string;status:string}>('/explore', {method:'POST',body:JSON.stringify({kiosk_url, ...(kiosk_id ? {kiosk_id} : {})})}),
+  startExplore:    (kiosk_url:string, kiosk_id?:string, review_feedback?:string) => req<{explore_id:string;status:string}>('/explore', {method:'POST',body:JSON.stringify({kiosk_url, ...(kiosk_id ? {kiosk_id} : {}), ...(review_feedback ? {review_feedback} : {})})}),
   getExploreStatus:(id: string)      => req<{explore_id:string;status:string;message:string}>(`/explore/${id}`),
   getScreenshots:         ()                  => req<string[]>('/screenshots'),
   getAnnotatedScreenshots:()                  => req<Record<string,string[]>>('/screenshots/annotated'),
@@ -103,6 +103,8 @@ export const api = {
   setExploreMode: (mode: string)             => req<{mode:string;status:string}>('/explore-config', {method:'PATCH',body:JSON.stringify({mode})}),
   setCardService: (card_service_url: string) => req<{status:string;card_service_url:string}>('/config/card-service', {method:'PATCH',body:JSON.stringify({card_service_url})}),
   setRepairLlm: (backend: 'claude'|'local') => req<{status:string; repair_llm:{backend:'claude'|'local'; local_model:string; local_base_url:string}}>('/config/repair-llm', {method:'PATCH', body:JSON.stringify({backend})}),
+  setHumanReview: (body: Partial<HumanReview>) => req<{status:string; human_review:HumanReview}>('/config/human-review', {method:'PATCH', body:JSON.stringify(body)}),
+  reviewRepairRca: (repair_id: string, decision: 'approve'|'reject', reason = '') => req<{status:string}>(`/repair/${repair_id}/rca-review`, {method:'POST', body:JSON.stringify({decision, reason})}),
   submitVerdict: (run_id: string, test_id: string, verdict: 'passed'|'failed') =>
     req<{status:string;test_id:string;outcome:string}>(`/runs/${run_id}/verdict`, {method:'PATCH',body:JSON.stringify({test_id,verdict})}),
   getTcConfig: (test_id: string)   => JSON.parse(localStorage.getItem(`tc_config_${test_id}`) || 'null') as TcConfig | null,
@@ -135,6 +137,12 @@ export type StepResult = {
 export function runScreenshotUrl(runId: string, pathOrName: string): string {
   const name = (pathOrName || '').split(/[/\\]/).pop() || '';
   return `${BASE}/runs/${encodeURIComponent(runId)}/screenshots/${encodeURIComponent(name)}`;
+}
+
+/** <img> URL for an annotated exploration screenshot (screenshots/annotated/<file>). */
+export function annotatedScreenshotUrl(pathOrName: string): string {
+  const name = (pathOrName || '').split(/[/\\]/).pop() || '';
+  return `${BASE}/screenshots/annotated/${encodeURIComponent(name)}`;
 }
 
 export type TestResultDetail = {
@@ -172,9 +180,12 @@ export type Config = {
   card_service_url: string;
   viewport: {width:number;height:number}; camera: {width:number;height:number};
   repair_llm?: { backend: 'claude'|'local'; local_model: string; local_base_url: string };
+  human_review?: { explorer: boolean; test_plan: boolean; rca: boolean };  // optional Approve/Reject gates
   kiosks: KioskConfig[];
   devices: DeviceConfig[];
 };
+
+export type HumanReview = { explorer: boolean; test_plan: boolean; rca: boolean };
 
 export type KioskConfig = {
   kiosk_id: string; name: string; url: string; robot_id: string;
@@ -341,6 +352,7 @@ export type TcPlan = {
 export type TcPlanInput = {
   test_id: string; summary: string; description?: string;
   steps_raw: string; expected_results_raw?: string; force?: boolean;
+  review_feedback?: string;   // human reject reason (human_review_test_plan) → folded into a regenerate
 };
 
 export type ExploreConfig = {
@@ -405,7 +417,7 @@ export type RepairStage = {
 };
 export type RepairJob = {
   repair_id: string;
-  status: 'pending' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'completed' | 'failed' | 'rca_stopped';
+  status: 'pending' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'completed' | 'failed' | 'rca_stopped' | 'awaiting_rca_review';
   auto?: boolean;              // true → auto-triggered by a failed test run
   failure: string; test_id?: string; run_id?: string | null;
   created_at?: string; updated_at?: string; error?: string;
