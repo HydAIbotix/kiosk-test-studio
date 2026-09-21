@@ -390,6 +390,9 @@ export type RepairStage = {
   note?: string;                // live progress note (e.g. 'Llama diagnosing… 45s / 630s')
   hits?: RepairHit[];            // retrieve / rca (docs read)
   patch?: RepairPatch;          // diagnose
+  // diagnose — EXACTLY what was sent to the model (for the customer-facing Detailed Report): the failure
+  // description, the retrieved code context, and the failed-step screenshot basenames (loaded via run_id).
+  inputs?: { failure?: string; context?: string; screenshots?: string[] };
   file?: string;                // apply
   verdict?: RcaVerdict; confidence?: string; rationale?: string; suspect?: string; stop?: boolean;   // rca
   ok?: boolean; code?: number; output?: string; cmd?: string;   // test / build

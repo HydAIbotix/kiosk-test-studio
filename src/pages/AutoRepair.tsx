@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
-import { api } from '../api/client';
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from 'react';
+import { api, runScreenshotUrl } from '../api/client';
 import type { RepairJob, RepairStage } from '../api/client';
 
 /** The self-healing arm of defect intelligence. Repairs run AUTOMATICALLY: whenever a test
@@ -199,6 +199,7 @@ function RepairCard({ job, open, onToggle, onUpdated, lockToggle }: {
 }) {
   const running = job.status === 'pending' || job.status === 'running' || job.status === 'cancelling';
   const [cancelBusy, setCancelBusy] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const cancel = async (e: ReactMouseEvent) => {
     e.stopPropagation();               // don't toggle the card open/closed
     setCancelBusy(true);
@@ -233,6 +234,11 @@ function RepairCard({ job, open, onToggle, onUpdated, lockToggle }: {
             {job.failure || '—'}
           </div>
         </div>
+        {/* Customer-facing elaborate walkthrough of everything that happened underneath the repair. */}
+        <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); setReportOpen(true); }}
+          title="Open a full visual report of every step of this repair">
+          📋 Detailed report
+        </button>
         {running && (
           <button className="btn btn-danger btn-sm" onClick={cancel} disabled={cancelBusy || job.status === 'cancelling'}
             title="Stop this repair so you can switch to other tasks">
@@ -249,6 +255,8 @@ function RepairCard({ job, open, onToggle, onUpdated, lockToggle }: {
           <RepairPipeline job={job} running={running} onUpdated={onUpdated} />
         </div>
       )}
+
+      {reportOpen && <DetailedReportWindow job={job} onClose={() => setReportOpen(false)} />}
     </div>
   );
 }
@@ -593,6 +601,279 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
       )}
       <div style={box}>{out}</div>
     </div>
+  );
+}
+
+// ── Detailed report window (customer-facing elaborate walkthrough) ──────────────
+// A floating window (minimize / maximize / close) that shows, step by step, EVERYTHING that happened
+// underneath a repair: what the RCA agent read and concluded, what code the retrieval surfaced, and —
+// the centrepiece — EXACTLY what was sent to Claude to diagnose (the failure description, the actual
+// step screenshots, and the retrieved code + doc context) and the fix Claude returned, then apply /
+// test / build / PR. Reads only data already on the job (no extra endpoints).
+
+type WinState = 'normal' | 'min' | 'max';
+
+function DetailedReportWindow({ job, onClose }: { job: RepairJob; onClose: () => void }) {
+  const [win, setWin] = useState<WinState>('normal');
+  const stages = mergedStages(job);
+  const runId = job.run_id || '';
+
+  const frame: CSSProperties = win === 'max'
+    ? { inset: 12, width: 'auto', height: 'auto' }
+    : win === 'min'
+      ? { right: 24, bottom: 24, width: 420, height: 'auto' }
+      : { top: '5vh', left: '50%', transform: 'translateX(-50%)', width: 'min(960px, 94vw)', height: '88vh' };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.45)',
+      display: win === 'min' ? 'block' : 'flex' }} onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ position: 'fixed', ...frame, display: 'flex', flexDirection: 'column',
+          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
+          boxShadow: '0 20px 60px rgba(0,0,0,0.5)', overflow: 'hidden' }}
+      >
+        {/* title bar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+          background: 'linear-gradient(135deg, rgba(99,102,241,0.20), rgba(59,130,246,0.08))',
+          borderBottom: '1px solid var(--border)', cursor: 'default' }}>
+          <span style={{ fontSize: 16 }}>📋</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>Auto-Repair — Detailed Report</div>
+            <div className="text-muted" style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {job.test_id || 'Unknown test'}{runId ? ` · run ${runId}` : ''} · {job.repair_id}
+            </div>
+          </div>
+          <button className="btn btn-secondary btn-sm" title="Minimize" onClick={() => setWin('min')}>—</button>
+          <button className="btn btn-secondary btn-sm" title={win === 'max' ? 'Restore' : 'Maximize'}
+            onClick={() => setWin(win === 'max' ? 'normal' : 'max')}>{win === 'max' ? '❐' : '▢'}</button>
+          <button className="btn btn-secondary btn-sm" title="Close" onClick={onClose}>✕</button>
+        </div>
+
+        {/* body */}
+        {win !== 'min' && (
+          <div style={{ flex: 1, overflow: 'auto', padding: 18, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <ReportOverview job={job} />
+            <ReportAgent num="①" name="RCA Agent"
+              blurb="reads the design docs + test case (never source code) and decides: is this a code bug, or a spec/invalid-test problem it should stop on?">
+              <RcaReport stage={stages['rca']} />
+            </ReportAgent>
+            <ReportAgent num="②" name="Code-Fixing Agent"
+              blurb="retrieves the offending code, asks Claude for one minimal patch, applies it, type-checks, builds and prepares a PR.">
+              <RetrieveReport stage={stages['retrieve']} />
+              <DiagnoseReport stage={stages['diagnose']} runId={runId} />
+              <ApplyReport stage={stages['apply']} />
+              <CmdReport title="Unit test (TypeScript type-check)" icon="🧪" stage={stages['test']} />
+              <CmdReport title="Build (tsc -b + vite build)" icon="🏗️" stage={stages['build']} />
+              <PrReport stage={stages['pr']} />
+            </ReportAgent>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ReportOverview({ job }: { job: RepairJob }) {
+  return (
+    <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <OverallBadge status={job.status} />
+        <strong style={{ fontSize: 14 }}>{job.test_id || 'Unknown test'}</strong>
+        <span className={`badge ${job.auto ? 'badge-accent' : 'badge-muted'}`} style={{ fontSize: 10 }}>
+          {job.auto ? 'auto-triggered by a failed run' : 'manual'}
+        </span>
+      </div>
+      <div>
+        <SectionLabel>What failed</SectionLabel>
+        <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{job.failure || '—'}</div>
+      </div>
+    </div>
+  );
+}
+
+function ReportAgent({ num, name, blurb, children }: {
+  num: string; name: string; blurb: string; children: ReactNode;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+        borderBottom: '2px solid var(--border)', paddingBottom: 6 }}>
+        <span style={{ fontWeight: 800, fontSize: 15 }}>{num} {name}</span>
+        <span className="text-muted" style={{ fontSize: 11 }}>{blurb}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: ReactNode }) {
+  return <div className="text-muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{children}</div>;
+}
+
+function ReportBlock({ icon, title, children }: { icon: string; title: string; children: ReactNode }) {
+  return (
+    <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontWeight: 700, fontSize: 13 }}>{icon} {title}</div>
+      {children}
+    </div>
+  );
+}
+
+const codeBox: CSSProperties = {
+  background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 10,
+  fontFamily: 'monospace', fontSize: 11, whiteSpace: 'pre-wrap', overflow: 'auto', maxHeight: 320,
+};
+
+function HitCards({ hits, label }: { hits?: RepairStage['hits']; label: string }) {
+  if (!hits || hits.length === 0) return <div className="text-muted" style={{ fontSize: 12 }}>{label}: none</div>;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {hits.map((h, i) => (
+        <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+          <div style={{ padding: '6px 10px', background: 'var(--surface2)', fontSize: 11, display: 'flex', gap: 8 }}>
+            <span className="badge badge-muted">{h.type || 'chunk'}</span>
+            <span className="text-muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {h.file}{h.start_line ? `  (L${h.start_line}–${h.end_line})` : ''}
+            </span>
+          </div>
+          <pre style={{ margin: 0, padding: 10, fontSize: 11, maxHeight: 200, overflow: 'auto' }}>{h.snippet}</pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RcaReport({ stage }: { stage?: RepairStage }) {
+  if (!stage) return <ReportBlock icon="🕵️" title="Root-cause analysis"><div className="text-muted" style={{ fontSize: 12 }}>Not run yet.</div></ReportBlock>;
+  const vmap: Record<string, [string, string]> = {
+    code_bug: ['badge-blue', 'Code bug — hand to the fixer'],
+    spec_bug: ['badge-yellow', 'Spec/requirements bug — STOP'],
+    test_invalid: ['badge-yellow', 'Test is invalid — STOP'],
+    skipped: ['badge-muted', 'RCA skipped'],
+  };
+  const [vcls, vlabel] = vmap[stage.verdict || 'skipped'] || ['badge-muted', stage.verdict || '—'];
+  return (
+    <ReportBlock icon="🕵️" title="Root-cause analysis — what the RCA agent decided">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 }}>
+        <span className={`badge ${vcls}`}>{vlabel}</span>
+        {stage.confidence && <span className="text-muted">confidence: {stage.confidence}</span>}
+        {stage.stop && <span className="badge badge-red">stopped the repair — no code changed</span>}
+      </div>
+      {stage.rationale && <div><SectionLabel>Rationale</SectionLabel><div style={{ fontSize: 12 }}>💬 {stage.rationale}</div></div>}
+      {stage.suspect && <div><SectionLabel>Suspect area handed to the fixer</SectionLabel><div style={{ fontSize: 12 }}>🎯 <strong>{stage.suspect}</strong></div></div>}
+      <div>
+        <SectionLabel>Docs / test cases the RCA agent read (no source code)</SectionLabel>
+        <HitCards hits={stage.hits} label="Documents read" />
+      </div>
+    </ReportBlock>
+  );
+}
+
+function RetrieveReport({ stage }: { stage?: RepairStage }) {
+  return (
+    <ReportBlock icon="🔎" title="Retrieve — the code chunks the RAG surfaced for Claude">
+      <div className="text-muted" style={{ fontSize: 11 }}>Tool: {stage?.tool || '—'}</div>
+      <HitCards hits={stage?.hits} label="Retrieved code" />
+    </ReportBlock>
+  );
+}
+
+function DiagnoseReport({ stage, runId }: { stage?: RepairStage; runId: string }) {
+  const inputs = stage?.inputs;
+  const shots = inputs?.screenshots || [];
+  const p = stage?.patch;
+  return (
+    <ReportBlock icon="🧠" title="Diagnose — exactly what was sent to Claude, and the fix it returned">
+      <div className="text-muted" style={{ fontSize: 11 }}>Tool: {stage?.tool || '—'}</div>
+
+      <div>
+        <SectionLabel>1 · Failure description sent to the model</SectionLabel>
+        <div style={codeBox}>{inputs?.failure || '(not captured)'}</div>
+      </div>
+
+      <div>
+        <SectionLabel>2 · Failed-step screenshots {shots.length ? '(attached for Claude — multimodal)' : ''}</SectionLabel>
+        {shots.length && runId ? (
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {shots.map((name, i) => (
+              <a key={i} href={runScreenshotUrl(runId, name)} target="_blank" rel="noreferrer"
+                style={{ display: 'block', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                <img src={runScreenshotUrl(runId, name)} alt={name}
+                  style={{ display: 'block', maxWidth: 220, maxHeight: 160, objectFit: 'contain', background: '#000' }} />
+              </a>
+            ))}
+          </div>
+        ) : (
+          <div className="text-muted" style={{ fontSize: 12 }}>
+            No screenshots attached (a text-only local model, or none were captured).
+          </div>
+        )}
+      </div>
+
+      <div>
+        <SectionLabel>3 · Retrieved code &amp; doc context sent to the model</SectionLabel>
+        <div style={codeBox}>{inputs?.context || '(not captured)'}</div>
+      </div>
+
+      <div>
+        <SectionLabel>Claude's answer — the minimal patch</SectionLabel>
+        {p ? (
+          <>
+            <div style={{ fontSize: 12, marginBottom: 6 }}>💡 {p.explanation}</div>
+            <div className="text-muted" style={{ fontSize: 11, marginBottom: 6 }}>{p.file_path}</div>
+            <div style={{ ...codeBox }}>
+              <div style={{ color: 'var(--red)' }}>- {p.find}</div>
+              <div style={{ color: 'var(--green)' }}>+ {p.replace}</div>
+            </div>
+          </>
+        ) : <div className="text-muted" style={{ fontSize: 12 }}>No patch produced.</div>}
+      </div>
+    </ReportBlock>
+  );
+}
+
+function ApplyReport({ stage }: { stage?: RepairStage }) {
+  return (
+    <ReportBlock icon="🩹" title="Apply — the single-occurrence patch">
+      <div style={{ fontSize: 12 }}>
+        {stage?.file ? <>Patched <strong>{stage.file}</strong>.</> : <span className="text-muted">Not applied.</span>}
+      </div>
+    </ReportBlock>
+  );
+}
+
+function CmdReport({ title, icon, stage }: { title: string; icon: string; stage?: RepairStage }) {
+  if (!stage) return <ReportBlock icon={icon} title={title}><div className="text-muted" style={{ fontSize: 12 }}>Not run.</div></ReportBlock>;
+  const okColor = stage.ok === false ? 'var(--red)' : 'var(--green)';
+  return (
+    <ReportBlock icon={icon} title={title}>
+      {stage.cmd && (
+        <div style={{ fontSize: 11 }}>
+          <span className="text-muted">$ {stage.cmd}</span>{' '}
+          <span style={{ color: okColor }}>{stage.ok === false ? `exit ${stage.code}` : 'exit 0'}</span>
+        </div>
+      )}
+      <div style={codeBox}>{stage.output || '(no output)'}</div>
+    </ReportBlock>
+  );
+}
+
+function PrReport({ stage }: { stage?: RepairStage }) {
+  return (
+    <ReportBlock icon="🔀" title="Raise PR — branch, commit &amp; diff">
+      {stage?.prepared ? (
+        <>
+          <div style={{ fontSize: 12, marginBottom: 6 }}>
+            <span className="badge badge-accent">{stage.branch}</span>{' '}
+            <span className="text-muted">→ {stage.remote}/{stage.base} · commit {stage.commit}</span>
+          </div>
+          <DiffBlock diff={stage.diff || ''} />
+        </>
+      ) : (
+        <div className="text-muted" style={{ fontSize: 12 }}>Branch not prepared: {stage?.diff || 'no git repo / commit failed / build not green'}</div>
+      )}
+    </ReportBlock>
   );
 }
 
