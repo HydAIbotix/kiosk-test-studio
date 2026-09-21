@@ -371,6 +371,8 @@ export type RepairPatch = {
   file_path: string; find: string; replace: string; explanation: string;
   source?: 'claude'|'local'|'demo-fallback';   // which provider produced the patch
   model?: string;                               // the concrete model name
+  confidence?: string;                          // model's self-reported confidence the context held the cause
+  root_cause?: string;                          // one-line underlying cause (not the symptom)
 };
 export type RepairPrOutcome = {
   opened: boolean; url?: string; output?: string;
@@ -379,7 +381,7 @@ export type RepairPrOutcome = {
 export type RepairPrDeleteOutcome = {
   deleted: boolean; remote_deleted?: boolean; branch?: string; output?: string;
 };
-export type RcaVerdict = 'code_bug' | 'spec_bug' | 'test_invalid' | 'skipped';
+export type RcaVerdict = 'code_bug' | 'spec_bug' | 'test_invalid' | 'environment' | 'unknown' | 'skipped';
 export type RepairRca = {
   verdict?: RcaVerdict; confidence?: string; rationale?: string; suspect?: string; stop?: boolean;
 };

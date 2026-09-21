@@ -504,6 +504,8 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
       code_bug:     ['badge-blue',   'Code bug'],
       spec_bug:     ['badge-yellow', 'Spec/requirements bug'],
       test_invalid: ['badge-yellow', 'Test is invalid'],
+      environment:  ['badge-yellow', 'Environment / infra issue'],
+      unknown:      ['badge-muted',  'Undetermined'],
       skipped:      ['badge-muted',  'RCA skipped'],
     };
     const [vcls, vlabel] = vmap[stage.verdict || 'skipped'] || ['badge-muted', stage.verdict || '—'];
@@ -613,10 +615,27 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
 
 type WinState = 'normal' | 'min' | 'max';
 
+type ReportView = 'summary' | 'technical';
+
 function DetailedReportWindow({ job, onClose }: { job: RepairJob; onClose: () => void }) {
   const [win, setWin] = useState<WinState>('normal');
+  const [view, setView] = useState<ReportView>('summary');   // executive summary is the default view
+  const [pendingAnchor, setPendingAnchor] = useState<string>('');
   const stages = mergedStages(job);
   const runId = job.run_id || '';
+
+  // A summary chart's "view details" link switches to the technical view and scrolls to that section.
+  const jumpTo = (anchor: string) => { setView('technical'); setPendingAnchor(anchor); };
+  useEffect(() => {
+    if (view === 'technical' && pendingAnchor) {
+      const id = pendingAnchor;
+      const t = window.setTimeout(() => {
+        document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setPendingAnchor('');
+      }, 60);
+      return () => window.clearTimeout(t);
+    }
+  }, [view, pendingAnchor]);
 
   const frame: CSSProperties = win === 'max'
     ? { inset: 12, width: 'auto', height: 'auto' }
@@ -644,6 +663,19 @@ function DetailedReportWindow({ job, onClose }: { job: RepairJob; onClose: () =>
               {job.test_id || 'Unknown test'}{runId ? ` · run ${runId}` : ''} · {job.repair_id}
             </div>
           </div>
+          {/* view toggle — executive summary (default) vs full technical detail */}
+          {win !== 'min' && (
+            <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', marginRight: 6 }}>
+              {(['summary', 'technical'] as ReportView[]).map(v => (
+                <button key={v} onClick={() => setView(v)}
+                  style={{ border: 'none', cursor: 'pointer', fontSize: 12, padding: '5px 12px',
+                    background: view === v ? 'var(--accent)' : 'transparent',
+                    color: view === v ? '#fff' : 'var(--muted)', fontWeight: view === v ? 700 : 500 }}>
+                  {v === 'summary' ? 'Executive summary' : 'Technical details'}
+                </button>
+              ))}
+            </div>
+          )}
           <button className="btn btn-secondary btn-sm" title="Minimize" onClick={() => setWin('min')}>—</button>
           <button className="btn btn-secondary btn-sm" title={win === 'max' ? 'Restore' : 'Maximize'}
             onClick={() => setWin(win === 'max' ? 'normal' : 'max')}>{win === 'max' ? '❐' : '▢'}</button>
@@ -653,20 +685,26 @@ function DetailedReportWindow({ job, onClose }: { job: RepairJob; onClose: () =>
         {/* body */}
         {win !== 'min' && (
           <div style={{ flex: 1, overflow: 'auto', padding: 18, display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <ReportOverview job={job} />
-            <ReportAgent num="①" name="RCA Agent"
-              blurb="reads the design docs + test case (never source code) and decides: is this a code bug, or a spec/invalid-test problem it should stop on?">
-              <RcaReport stage={stages['rca']} />
-            </ReportAgent>
-            <ReportAgent num="②" name="Code-Fixing Agent"
-              blurb="retrieves the offending code, asks Claude for one minimal patch, applies it, type-checks, builds and prepares a PR.">
-              <RetrieveReport stage={stages['retrieve']} />
-              <DiagnoseReport stage={stages['diagnose']} runId={runId} />
-              <ApplyReport stage={stages['apply']} />
-              <CmdReport title="Unit test (TypeScript type-check)" icon="🧪" stage={stages['test']} />
-              <CmdReport title="Build (tsc -b + vite build)" icon="🏗️" stage={stages['build']} />
-              <PrReport stage={stages['pr']} />
-            </ReportAgent>
+            {view === 'summary' ? (
+              <ExecutiveSummary job={job} stages={stages} onJump={jumpTo} />
+            ) : (
+              <>
+                <ReportOverview job={job} />
+                <ReportAgent num="①" name="RCA Agent"
+                  blurb="reads the design docs + test case (never source code) and decides: is this a code bug, or a spec / invalid-test / environment problem it should stop on?">
+                  <RcaReport stage={stages['rca']} />
+                </ReportAgent>
+                <ReportAgent num="②" name="Code-Fixing Agent"
+                  blurb="retrieves the offending code, asks Claude for one minimal patch, applies it, type-checks, builds and prepares a PR.">
+                  <RetrieveReport stage={stages['retrieve']} />
+                  <DiagnoseReport stage={stages['diagnose']} runId={runId} />
+                  <ApplyReport stage={stages['apply']} />
+                  <CmdReport title="Unit test (TypeScript type-check)" icon="🧪" stage={stages['test']} anchor="sec-test" />
+                  <CmdReport title="Build (tsc -b + vite build)" icon="🏗️" stage={stages['build']} anchor="sec-build" />
+                  <PrReport stage={stages['pr']} />
+                </ReportAgent>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -711,9 +749,9 @@ function SectionLabel({ children }: { children: ReactNode }) {
   return <div className="text-muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{children}</div>;
 }
 
-function ReportBlock({ icon, title, children }: { icon: string; title: string; children: ReactNode }) {
+function ReportBlock({ icon, title, children, anchor }: { icon: string; title: string; children: ReactNode; anchor?: string }) {
   return (
-    <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div id={anchor} className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, scrollMarginTop: 8 }}>
       <div style={{ fontWeight: 700, fontSize: 13 }}>{icon} {title}</div>
       {children}
     </div>
@@ -745,16 +783,18 @@ function HitCards({ hits, label }: { hits?: RepairStage['hits']; label: string }
 }
 
 function RcaReport({ stage }: { stage?: RepairStage }) {
-  if (!stage) return <ReportBlock icon="🕵️" title="Root-cause analysis"><div className="text-muted" style={{ fontSize: 12 }}>Not run yet.</div></ReportBlock>;
+  if (!stage) return <ReportBlock icon="🕵️" title="Root-cause analysis" anchor="sec-rca"><div className="text-muted" style={{ fontSize: 12 }}>Not run yet.</div></ReportBlock>;
   const vmap: Record<string, [string, string]> = {
     code_bug: ['badge-blue', 'Code bug — hand to the fixer'],
     spec_bug: ['badge-yellow', 'Spec/requirements bug — STOP'],
     test_invalid: ['badge-yellow', 'Test is invalid — STOP'],
+    environment: ['badge-yellow', 'Environment / infra issue — STOP'],
+    unknown: ['badge-muted', 'Undetermined — verify in code'],
     skipped: ['badge-muted', 'RCA skipped'],
   };
   const [vcls, vlabel] = vmap[stage.verdict || 'skipped'] || ['badge-muted', stage.verdict || '—'];
   return (
-    <ReportBlock icon="🕵️" title="Root-cause analysis — what the RCA agent decided">
+    <ReportBlock icon="🕵️" title="Root-cause analysis — what the RCA agent decided" anchor="sec-rca">
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 }}>
         <span className={`badge ${vcls}`}>{vlabel}</span>
         {stage.confidence && <span className="text-muted">confidence: {stage.confidence}</span>}
@@ -772,7 +812,7 @@ function RcaReport({ stage }: { stage?: RepairStage }) {
 
 function RetrieveReport({ stage }: { stage?: RepairStage }) {
   return (
-    <ReportBlock icon="🔎" title="Retrieve — the code chunks the RAG surfaced for Claude">
+    <ReportBlock icon="🔎" title="Retrieve — the code chunks the RAG surfaced for Claude" anchor="sec-retrieve">
       <div className="text-muted" style={{ fontSize: 11 }}>Tool: {stage?.tool || '—'}</div>
       <HitCards hits={stage?.hits} label="Retrieved code" />
     </ReportBlock>
@@ -784,7 +824,7 @@ function DiagnoseReport({ stage, runId }: { stage?: RepairStage; runId: string }
   const shots = inputs?.screenshots || [];
   const p = stage?.patch;
   return (
-    <ReportBlock icon="🧠" title="Diagnose — exactly what was sent to Claude, and the fix it returned">
+    <ReportBlock icon="🧠" title="Diagnose — exactly what was sent to Claude, and the fix it returned" anchor="sec-diagnose">
       <div className="text-muted" style={{ fontSize: 11 }}>Tool: {stage?.tool || '—'}</div>
 
       <div>
@@ -835,7 +875,7 @@ function DiagnoseReport({ stage, runId }: { stage?: RepairStage; runId: string }
 
 function ApplyReport({ stage }: { stage?: RepairStage }) {
   return (
-    <ReportBlock icon="🩹" title="Apply — the single-occurrence patch">
+    <ReportBlock icon="🩹" title="Apply — the single-occurrence patch" anchor="sec-apply">
       <div style={{ fontSize: 12 }}>
         {stage?.file ? <>Patched <strong>{stage.file}</strong>.</> : <span className="text-muted">Not applied.</span>}
       </div>
@@ -843,11 +883,11 @@ function ApplyReport({ stage }: { stage?: RepairStage }) {
   );
 }
 
-function CmdReport({ title, icon, stage }: { title: string; icon: string; stage?: RepairStage }) {
-  if (!stage) return <ReportBlock icon={icon} title={title}><div className="text-muted" style={{ fontSize: 12 }}>Not run.</div></ReportBlock>;
+function CmdReport({ title, icon, stage, anchor }: { title: string; icon: string; stage?: RepairStage; anchor?: string }) {
+  if (!stage) return <ReportBlock icon={icon} title={title} anchor={anchor}><div className="text-muted" style={{ fontSize: 12 }}>Not run.</div></ReportBlock>;
   const okColor = stage.ok === false ? 'var(--red)' : 'var(--green)';
   return (
-    <ReportBlock icon={icon} title={title}>
+    <ReportBlock icon={icon} title={title} anchor={anchor}>
       {stage.cmd && (
         <div style={{ fontSize: 11 }}>
           <span className="text-muted">$ {stage.cmd}</span>{' '}
@@ -861,7 +901,7 @@ function CmdReport({ title, icon, stage }: { title: string; icon: string; stage?
 
 function PrReport({ stage }: { stage?: RepairStage }) {
   return (
-    <ReportBlock icon="🔀" title="Raise PR — branch, commit &amp; diff">
+    <ReportBlock icon="🔀" title="Raise PR — branch, commit &amp; diff" anchor="sec-pr">
       {stage?.prepared ? (
         <>
           <div style={{ fontSize: 12, marginBottom: 6 }}>
@@ -874,6 +914,208 @@ function PrReport({ stage }: { stage?: RepairStage }) {
         <div className="text-muted" style={{ fontSize: 12 }}>Branch not prepared: {stage?.diff || 'no git repo / commit failed / build not green'}</div>
       )}
     </ReportBlock>
+  );
+}
+
+// ── Executive Summary (default report view) — consolidates the technical detail into charts ──────
+// Audience: leadership. Every chart carries a "View technical details →" link back to its section.
+
+const CONF_PCT: Record<string, number> = { high: 92, medium: 60, low: 28 };
+function confPct(c?: string): number { return CONF_PCT[(c || '').toLowerCase()] ?? 0; }
+
+const VERDICT_LABEL: Record<string, string> = {
+  code_bug: 'Code bug', spec_bug: 'Requirements / spec bug', test_invalid: 'Invalid test case',
+  environment: 'Environment / infra issue', unknown: 'Undetermined', skipped: 'Not analysed',
+};
+
+function ExecutiveSummary({ job, stages, onJump }: {
+  job: RepairJob; stages: Record<string, RepairStage>; onJump: (anchor: string) => void;
+}) {
+  const rca = stages['rca']; const retrieve = stages['retrieve']; const diagnose = stages['diagnose'];
+  const apply = stages['apply']; const build = stages['build']; const pr = stages['pr'];
+  const patch = diagnose?.patch;
+  const verdict = rca?.verdict || 'skipped';
+  const docsRead = rca?.hits?.length || 0;
+  const codeChunks = retrieve?.hits?.length || 0;
+  const shots = diagnose?.inputs?.screenshots?.length || 0;
+  const fileChanged = apply?.file || '';
+  const linesChanged = patch ? Math.max(String(patch.find || '').split('\n').length, String(patch.replace || '').split('\n').length) : 0;
+  const succeeded = job.status === 'succeeded' || build?.ok === true;
+  const rcaStopped = job.status === 'rca_stopped';
+  const cancelled = job.status === 'cancelled';
+
+  const outcome = succeeded
+    ? { color: 'var(--green)', bg: 'rgba(34,197,94,0.12)', icon: '✓', head: 'Bug fixed & verified',
+        line: `The agent found the root cause, patched ${fileChanged || 'the code'} and the build passed${pr?.prepared ? ' — a pull request is ready for review.' : '.'}` }
+    : rcaStopped
+      ? { color: 'var(--yellow)', bg: 'rgba(234,179,8,0.12)', icon: '🛑', head: `Stopped — ${VERDICT_LABEL[verdict] || verdict}`,
+          line: rca?.rationale || job.rca?.rationale || 'The RCA agent judged this is not an app-code bug, so no code was changed.' }
+      : cancelled
+        ? { color: 'var(--muted)', bg: 'rgba(148,163,184,0.12)', icon: '⨯', head: 'Cancelled',
+            line: 'The repair was cancelled before completion — no changes were committed.' }
+        : { color: 'var(--red)', bg: 'rgba(239,68,68,0.12)', icon: '✕', head: 'Could not complete',
+            line: job.error || 'The agent could not produce a verified fix — see the technical details.' };
+
+  const evidence = [
+    { label: 'Docs & specs read', value: docsRead, color: 'var(--accent2)', anchor: 'sec-rca' },
+    { label: 'Code sections examined', value: codeChunks, color: 'var(--accent)', anchor: 'sec-retrieve' },
+    { label: 'Screenshots analysed', value: shots, color: 'var(--green)', anchor: 'sec-diagnose' },
+  ];
+  const evMax = Math.max(1, ...evidence.map(e => e.value));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Outcome hero */}
+      <div className="card" style={{ padding: 18, background: outcome.bg, borderLeft: `4px solid ${outcome.color}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 30 }}>{outcome.icon}</div>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>{outcome.head}</div>
+            <div className="text-muted" style={{ fontSize: 13, marginTop: 2 }}>
+              <strong>{job.test_id || 'Test'}</strong> · {outcome.line}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* KPI tiles */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+        <StatTile label="Root cause" value={VERDICT_LABEL[verdict] || verdict}
+          sub={rca?.confidence ? `${rca.confidence} confidence` : ''} color="var(--accent2)" onClick={() => onJump('sec-rca')} />
+        <StatTile label="Files changed" value={fileChanged ? '1' : '0'}
+          sub={fileChanged ? fileChanged.split(/[/\\]/).pop() : '—'} color="var(--accent)" onClick={() => onJump('sec-apply')} />
+        <StatTile label="Lines changed" value={String(linesChanged)} sub="minimal patch"
+          color="var(--purple, var(--accent))" onClick={() => onJump('sec-diagnose')} />
+        <StatTile label="Build" value={build?.ok === true ? 'Passed' : build?.ok === false ? 'Failed' : '—'}
+          sub={build?.ok === true ? 'tsc + vite' : 'verification gate'}
+          color={build?.ok === false ? 'var(--red)' : 'var(--green)'} onClick={() => onJump('sec-build')} />
+      </div>
+
+      {/* Pipeline stepper */}
+      <SummaryCard title="What the agent did, step by step" onJump={() => onJump('sec-rca')} linkLabel="See each stage →">
+        <SummaryStepper job={job} stages={stages} onJump={onJump} />
+      </SummaryCard>
+
+      {/* Evidence + confidence side by side */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
+        <SummaryCard title="Evidence the agent examined" onJump={() => onJump('sec-retrieve')} linkLabel="View the evidence →">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+            {evidence.map(e => (
+              <BarRow key={e.label} label={e.label} value={e.value} max={evMax} color={e.color}
+                onClick={() => onJump(e.anchor)} />
+            ))}
+          </div>
+        </SummaryCard>
+
+        <SummaryCard title="Diagnostic confidence" onJump={() => onJump('sec-diagnose')} linkLabel="How the fix was found →">
+          <div style={{ display: 'flex', gap: 20, justifyContent: 'space-around', alignItems: 'center', paddingTop: 6 }}>
+            <Ring pct={confPct(rca?.confidence)} label="Root-cause" caption={rca?.confidence || '—'} color="var(--accent2)" />
+            <Ring pct={confPct(patch?.confidence)} label="Fix" caption={patch?.confidence || '—'} color="var(--green)" />
+          </div>
+        </SummaryCard>
+      </div>
+
+      {/* The fix at a glance */}
+      {patch && (
+        <SummaryCard title="The fix, at a glance" onJump={() => onJump('sec-diagnose')} linkLabel="See what was sent to Claude →">
+          <div style={{ fontSize: 13, marginBottom: 6 }}>💡 {patch.explanation}</div>
+          {patch.root_cause && <div className="text-muted" style={{ fontSize: 12, marginBottom: 8 }}>Root cause: {patch.root_cause}</div>}
+          <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 10,
+            fontFamily: 'monospace', fontSize: 11.5, overflowX: 'auto' }}>
+            <div style={{ color: 'var(--red)' }}>- {patch.find}</div>
+            <div style={{ color: 'var(--green)' }}>+ {patch.replace}</div>
+          </div>
+        </SummaryCard>
+      )}
+    </div>
+  );
+}
+
+function SummaryCard({ title, children, onJump, linkLabel }: {
+  title: string; children: ReactNode; onJump: () => void; linkLabel: string;
+}) {
+  return (
+    <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, justifyContent: 'space-between' }}>
+        <div style={{ fontWeight: 700, fontSize: 13 }}>{title}</div>
+        <button onClick={onJump} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 11,
+          color: 'var(--accent)', padding: 0, whiteSpace: 'nowrap' }}>{linkLabel}</button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function StatTile({ label, value, sub, color, onClick }: {
+  label: string; value: string; sub?: string; color: string; onClick?: () => void;
+}) {
+  return (
+    <div className="card" onClick={onClick} style={{ padding: 12, cursor: onClick ? 'pointer' : 'default',
+      borderTop: `3px solid ${color}` }}>
+      <div className="text-muted" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 800, marginTop: 3, lineHeight: 1.15 }}>{value}</div>
+      {sub && <div className="text-muted" style={{ fontSize: 11, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub}</div>}
+    </div>
+  );
+}
+
+function SummaryStepper({ job, stages, onJump }: {
+  job: RepairJob; stages: Record<string, RepairStage>; onJump: (a: string) => void;
+}) {
+  const running = job.status === 'pending' || job.status === 'running' || job.status === 'cancelling';
+  const firstIncomplete = STAGES.findIndex(s => {
+    const st = stages[s.key]?.status; return st !== 'done' && st !== 'warn';
+  });
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {STAGES.map((meta, i) => {
+        const kind = statusOf(stages[meta.key], running && i === firstIncomplete);
+        const dot = DOT[kind];
+        return (
+          <button key={meta.key} onClick={() => onJump(`sec-${meta.key}`)} title={`${meta.label} — ${kind}`}
+            style={{ flex: '1 1 92px', minWidth: 92, border: `1px solid ${dot.ring}`, borderRadius: 8, cursor: 'pointer',
+              background: kind === 'done' ? 'rgba(34,197,94,0.08)' : kind === 'failed' ? 'rgba(239,68,68,0.08)'
+                : kind === 'running' ? 'rgba(59,130,246,0.10)' : 'var(--surface)',
+              padding: '8px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+            <span style={{ fontSize: 16 }}>{meta.icon}</span>
+            <span style={{ fontSize: 10.5, fontWeight: 600, textAlign: 'center', lineHeight: 1.15 }}>{meta.label}</span>
+            <span style={{ color: dot.color, fontSize: 12, fontWeight: 700 }}>{dot.glyph}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BarRow({ label, value, max, color, onClick }: {
+  label: string; value: number; max: number; color: string; onClick?: () => void;
+}) {
+  const pct = Math.round((value / max) * 100);
+  return (
+    <div onClick={onClick} style={{ cursor: onClick ? 'pointer' : 'default' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+        <span>{label}</span><strong>{value}</strong>
+      </div>
+      <div style={{ height: 10, borderRadius: 5, background: 'var(--bg)', overflow: 'hidden' }}>
+        <div style={{ width: `${value > 0 ? Math.max(6, pct) : 0}%`, height: '100%', background: color, borderRadius: 5 }} />
+      </div>
+    </div>
+  );
+}
+
+function Ring({ pct, label, caption, color }: { pct: number; label: string; caption: string; color: string }) {
+  const r = 26, c = 2 * Math.PI * r, off = c * (1 - pct / 100);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      <svg width="72" height="72" viewBox="0 0 72 72">
+        <circle cx="36" cy="36" r={r} fill="none" stroke="var(--border)" strokeWidth="7" />
+        <circle cx="36" cy="36" r={r} fill="none" stroke={pct ? color : 'var(--border)'} strokeWidth="7"
+          strokeLinecap="round" strokeDasharray={c} strokeDashoffset={off} transform="rotate(-90 36 36)" />
+        <text x="36" y="40" textAnchor="middle" fontSize="15" fontWeight="700" fill="var(--text)">{pct ? `${pct}%` : '—'}</text>
+      </svg>
+      <div style={{ fontSize: 12, fontWeight: 600 }}>{label}</div>
+      <div className="text-muted" style={{ fontSize: 10.5, textTransform: 'capitalize' }}>{caption}</div>
+    </div>
   );
 }
 
