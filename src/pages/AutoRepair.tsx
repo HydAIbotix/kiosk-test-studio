@@ -653,7 +653,7 @@ function DetailedReportWindow({ job, onClose }: { job: RepairJob; onClose: () =>
       <div
         onClick={(e) => e.stopPropagation()}
         style={{ position: 'fixed', ...frame, display: 'flex', flexDirection: 'column',
-          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
+          background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 10,
           boxShadow: '0 20px 60px rgba(0,0,0,0.5)', overflow: 'hidden' }}
       >
         {/* title bar */}
@@ -946,6 +946,13 @@ function ExecutiveSummary({ job, stages, onJump }: {
   const linesChanged = patch ? Math.max(String(patch.find || '').split('\n').length, String(patch.replace || '').split('\n').length) : 0;
   const succeeded = job.status === 'succeeded' || build?.ok === true;
   const rcaStopped = job.status === 'rca_stopped';
+  // The RCA verdict is only ADVISORY when it did not STOP the pipeline (medium/low confidence). If the
+  // code-fixing agent then applied a fix and the build passed, the VERIFIED root cause is a code bug — so
+  // the headline "Root cause" must reflect that, not a non-stopping (and here wrong) spec/test advisory
+  // that would contradict "Bug fixed & verified". When RCA actually stopped, its verdict stands.
+  const patchVerified = !!fileChanged && succeeded && !rcaStopped;
+  const effectiveVerdict = patchVerified ? 'code_bug' : verdict;
+  const rcaDisagreed = patchVerified && verdict !== 'code_bug' && verdict !== 'skipped';
   const cancelled = job.status === 'cancelled';
 
   const outcome = succeeded
@@ -984,8 +991,11 @@ function ExecutiveSummary({ job, stages, onJump }: {
 
       {/* KPI tiles */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-        <StatTile label="Root cause" value={VERDICT_LABEL[verdict] || verdict}
-          sub={rca?.confidence ? `${rca.confidence} confidence` : ''} color="var(--accent2)" onClick={() => onJump('sec-rca')} />
+        <StatTile label="Root cause" value={VERDICT_LABEL[effectiveVerdict] || effectiveVerdict}
+          sub={patchVerified
+            ? (patch?.root_cause ? patch.root_cause : 'verified by the build')
+            : (rca?.confidence ? `${rca.confidence} confidence` : '')}
+          color="var(--accent2)" onClick={() => onJump('sec-rca')} />
         <StatTile label="Files changed" value={fileChanged ? '1' : '0'}
           sub={fileChanged ? fileChanged.split(/[/\\]/).pop() : '—'} color="var(--accent)" onClick={() => onJump('sec-apply')} />
         <StatTile label="Lines changed" value={String(linesChanged)} sub="minimal patch"
@@ -994,6 +1004,13 @@ function ExecutiveSummary({ job, stages, onJump }: {
           sub={build?.ok === true ? 'tsc + vite' : 'verification gate'}
           color={build?.ok === false ? 'var(--red)' : 'var(--green)'} onClick={() => onJump('sec-build')} />
       </div>
+      {rcaDisagreed && (
+        <div className="text-muted" style={{ fontSize: 11.5, marginTop: -6 }}>
+          Note: the RCA agent's initial read was “{VERDICT_LABEL[verdict] || verdict}” (advisory,
+          {rca?.confidence ? ` ${rca.confidence} confidence` : ''}), but it did not halt the pipeline, and the
+          code-fixing agent produced a fix that passed the build — so the verified root cause is a code bug.
+        </div>
+      )}
 
       {/* Pipeline stepper */}
       <SummaryCard title="What the agent did, step by step" onJump={() => onJump('sec-rca')} linkLabel="See each stage →">
