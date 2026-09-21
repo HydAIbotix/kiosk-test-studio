@@ -50,6 +50,10 @@ const DOT: Record<StatusKind, { glyph: string; color: string; ring: string }> = 
   failed:  { glyph: '✕', color: 'var(--red)',    ring: 'var(--red)' },
 };
 
+// A clearly-legible monospace stack for the code/output boxes (bare `monospace` renders faint/thin on
+// some platforms). Paired with an explicit text colour so the text is always visible on the dark boxes.
+const MONO = "ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Code', 'JetBrains Mono', Consolas, 'Liberation Mono', Menlo, monospace";
+
 function mergedStages(job: RepairJob | null): Record<string, RepairStage> {
   if (!job) return {};
   return { ...(job.stages || {}), ...(job.result?.stages || {}) };
@@ -494,8 +498,8 @@ function StageRow({ meta, stage, kind, last }: {
 
 function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage }) {
   const box: CSSProperties = {
-    marginTop: 8, background: 'var(--bg)', border: '1px solid var(--border)',
-    borderRadius: 6, padding: 10, fontFamily: 'monospace', fontSize: 12,
+    marginTop: 8, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)',
+    borderRadius: 6, padding: 10, fontFamily: MONO, fontSize: 12.5, lineHeight: 1.5,
     whiteSpace: 'pre-wrap', overflowX: 'auto', maxHeight: 280,
   };
 
@@ -531,7 +535,7 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
                   <span className="badge badge-muted">{h.type}</span>
                   <span className="text-muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.file}</span>
                 </div>
-                <pre style={{ margin: 0, padding: 10, fontSize: 11, maxHeight: 120, overflow: 'auto' }}>{h.snippet}</pre>
+                <pre style={{ margin: 0, padding: 10, fontFamily: MONO, fontSize: 12, lineHeight: 1.5, color: 'var(--text)', maxHeight: 120, overflow: 'auto' }}>{h.snippet}</pre>
               </div>
             ))}
           </div>
@@ -551,7 +555,7 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
                 {h.file}{h.start_line ? `  (L${h.start_line}–${h.end_line})` : ''}
               </span>
             </div>
-            <pre style={{ margin: 0, padding: 10, fontSize: 11, maxHeight: 150, overflow: 'auto' }}>{h.snippet}</pre>
+            <pre style={{ margin: 0, padding: 10, fontFamily: MONO, fontSize: 12, lineHeight: 1.5, color: 'var(--text)', maxHeight: 150, overflow: 'auto' }}>{h.snippet}</pre>
           </div>
         ))}
       </div>
@@ -759,8 +763,8 @@ function ReportBlock({ icon, title, children, anchor }: { icon: string; title: s
 }
 
 const codeBox: CSSProperties = {
-  background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 10,
-  fontFamily: 'monospace', fontSize: 11, whiteSpace: 'pre-wrap', overflow: 'auto', maxHeight: 320,
+  background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: 10,
+  fontFamily: MONO, fontSize: 12.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflow: 'auto', maxHeight: 320,
 };
 
 function HitCards({ hits, label }: { hits?: RepairStage['hits']; label: string }) {
@@ -775,7 +779,7 @@ function HitCards({ hits, label }: { hits?: RepairStage['hits']; label: string }
               {h.file}{h.start_line ? `  (L${h.start_line}–${h.end_line})` : ''}
             </span>
           </div>
-          <pre style={{ margin: 0, padding: 10, fontSize: 11, maxHeight: 200, overflow: 'auto' }}>{h.snippet}</pre>
+          <pre style={{ margin: 0, padding: 10, fontFamily: MONO, fontSize: 12, lineHeight: 1.5, color: 'var(--text)', maxHeight: 200, overflow: 'auto' }}>{h.snippet}</pre>
         </div>
       ))}
     </div>
@@ -1021,7 +1025,7 @@ function ExecutiveSummary({ job, stages, onJump }: {
           <div style={{ fontSize: 13, marginBottom: 6 }}>💡 {patch.explanation}</div>
           {patch.root_cause && <div className="text-muted" style={{ fontSize: 12, marginBottom: 8 }}>Root cause: {patch.root_cause}</div>}
           <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 10,
-            fontFamily: 'monospace', fontSize: 11.5, overflowX: 'auto' }}>
+            fontFamily: MONO, fontSize: 12.5, lineHeight: 1.5, overflowX: 'auto' }}>
             <div style={{ color: 'var(--red)' }}>- {patch.find}</div>
             <div style={{ color: 'var(--green)' }}>+ {patch.replace}</div>
           </div>
@@ -1123,7 +1127,7 @@ function DiffBlock({ diff }: { diff: string }) {
   if (!diff) return <div className="text-muted" style={{ fontSize: 12 }}>(no diff captured)</div>;
   return (
     <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6,
-      padding: 10, fontFamily: 'monospace', fontSize: 11, overflowX: 'auto', maxHeight: 260 }}>
+      padding: 10, fontFamily: MONO, fontSize: 12, lineHeight: 1.5, overflowX: 'auto', maxHeight: 260 }}>
       {diff.split('\n').map((ln, i) => {
         const c = ln.startsWith('+') && !ln.startsWith('+++') ? 'var(--green)'
           : ln.startsWith('-') && !ln.startsWith('---') ? 'var(--red)'
