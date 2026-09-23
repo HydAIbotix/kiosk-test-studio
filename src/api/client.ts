@@ -111,7 +111,29 @@ export const api = {
   saveTcConfig:(test_id: string, cfg: TcConfig) => { localStorage.setItem(`tc_config_${test_id}`, JSON.stringify(cfg)); },
   getSelectedTcs: ()               => JSON.parse(localStorage.getItem('selected_tcs') || '[]') as string[],
   saveSelectedTcs:(ids: string[])  => { localStorage.setItem('selected_tcs', JSON.stringify(ids)); },
+  // ── Test-plan REVIEW status (Approve/Reject in Test Intake) — browser-local, keyed by test_id ──
+  // The source of truth for WHICH test cases the Execution page is allowed to run: only 'approved'
+  // ones. A 'reject' captures a reason that Claude folds into the next plan generation for that TC.
+  getTcReviews:  ()                => readTcReviews(),
+  saveTcReviews: (m: Record<string, TcReview>) => { localStorage.setItem('tc_reviews', JSON.stringify(m)); },
+  getTcReview:   (test_id: string) => readTcReviews()[test_id] ?? null,
+  setTcReview:   (test_id: string, rec: TcReview | null) => {
+    const m = readTcReviews();
+    if (rec) m[test_id] = rec; else delete m[test_id];
+    localStorage.setItem('tc_reviews', JSON.stringify(m));
+  },
+  getApprovedTcs:()                => Object.entries(readTcReviews())
+    .filter(([, r]) => r.status === 'approved').map(([id]) => id),
+  // Execution-page per-approved-case EXCLUDE set (operator can drop an approved case from a run without
+  // un-approving it). Kept separate from approval so it never changes what "approved" means.
+  getExcludedTcs: ()               => { try { return JSON.parse(localStorage.getItem('exec_excluded') || '[]') as string[]; } catch { return []; } },
+  saveExcludedTcs:(ids: string[])  => { localStorage.setItem('exec_excluded', JSON.stringify(ids)); },
 };
+
+function readTcReviews(): Record<string, TcReview> {
+  try { return JSON.parse(localStorage.getItem('tc_reviews') || '{}') as Record<string, TcReview>; }
+  catch { return {}; }
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -334,6 +356,12 @@ export type AppMap = {
 };
 
 export type TcConfig = Record<string, string>; // field_key → value
+
+// Approve/Reject status for a generated test plan (Test Intake review step). 'pending' = generated but
+// not yet reviewed; 'approved' = eligible to run on the Execution page; 'rejected' is transient (the plan
+// is regenerated with `reason` folded into Claude's next generation, landing back at 'pending').
+export type TcReviewStatus = 'pending' | 'approved' | 'rejected';
+export type TcReview = { status: TcReviewStatus; reason?: string };
 
 export type TcPlanStep = {
   action: string; channel: 'robot'|'web'|'db'|'validation';

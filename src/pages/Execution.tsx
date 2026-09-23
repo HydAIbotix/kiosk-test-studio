@@ -129,11 +129,19 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
   useEffect(() => { api.getConfig().then(c => setBackend(c.robot_backend)).catch(() => {}); }, []);
 
   // Selection AND run order are persisted in localStorage (`selected_tcs` is an ordered array).
-  // Test Intake decides WHICH tests; this page decides the ORDER they execute in — the suite runs
-  // top-to-bottom in exactly this order (the backend honors the id order sent in `filter_tc`).
+  // Test Intake decides WHICH tests (only APPROVED plans are runnable); this page decides the ORDER
+  // and lets the operator EXCLUDE individual approved cases from a run. The suite runs top-to-bottom
+  // in exactly this order (the backend honors the id order sent in `filter_tc`).
   const [orderedIds, setOrderedIds] = useState<string[]>(() => api.getSelectedTcs());
+  const [excluded, setExcluded]     = useState<Set<string>>(() => new Set(api.getExcludedTcs()));
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const selectedIds = new Set<string>(orderedIds);
+
+  // Review mode = the Approve/Reject flow has been used at least once. When on, the run pool is the
+  // APPROVED set and each row can be individually included/excluded. When off (legacy / no reviews yet),
+  // behaviour is byte-for-byte as before: `selected_tcs` is the run list, no per-row exclude.
+  const reviewMode  = Object.keys(api.getTcReviews()).length > 0;
+  const approvedSet = new Set(api.getApprovedTcs());
 
   // Load TC details from API so we can display summaries and resolve plans
   const [availableTcs, setAvailable] = useState<TestCase[]>([]);
@@ -164,13 +172,37 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableTcs]);
 
+  // Reorder helpers — persist immediately so the chosen order survives navigation and is what runs.
+  const persistOrder = (ids: string[]) => { setOrderedIds(ids); api.saveSelectedTcs(ids); };
+
+  // In review mode, reconcile the run list to the APPROVED set: keep approved ids (in the operator's
+  // saved order), append any approved not yet listed (in test-case order), drop no-longer-approved ids.
+  // Also prune the exclude set to approved. Runs once the test cases have loaded.
+  useEffect(() => {
+    if (!reviewMode || availableTcs.length === 0) return;
+    const order = availableTcs.map(t => t.test_id);
+    const approvedOrdered = [
+      ...orderedIds.filter(id => approvedSet.has(id)),
+      ...order.filter(id => approvedSet.has(id) && !orderedIds.includes(id)),
+    ];
+    if (approvedOrdered.join(',') !== orderedIds.join(',')) persistOrder(approvedOrdered);
+    const prunedEx = [...excluded].filter(id => approvedSet.has(id));
+    if (prunedEx.length !== excluded.size) { setExcluded(new Set(prunedEx)); api.saveExcludedTcs(prunedEx); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableTcs]);
+
+  const toggleExclude = (id: string) => {
+    const s = new Set(excluded);
+    s.has(id) ? s.delete(id) : s.add(id);
+    setExcluded(s); api.saveExcludedTcs([...s]);
+  };
+
   // Render + run in the operator's chosen order (orderedIds), NOT availableTcs/test_id order.
   const tcById      = new Map(availableTcs.map(tc => [tc.test_id, tc]));
   const selectedTcs = orderedIds.map(id => tcById.get(id)).filter((t): t is TestCase => !!t);
-  const filterTc    = orderedIds.join(',') || undefined;
-
-  // Reorder helpers — persist immediately so the chosen order survives navigation and is what runs.
-  const persistOrder = (ids: string[]) => { setOrderedIds(ids); api.saveSelectedTcs(ids); };
+  // The ids that actually run: in review mode, approved-and-not-excluded; else the whole ordered list.
+  const runIds      = reviewMode ? orderedIds.filter(id => !excluded.has(id)) : orderedIds;
+  const filterTc    = runIds.join(',') || undefined;
   const moveBy = (idx: number, delta: number) => {
     const j = idx + delta;
     if (j < 0 || j >= orderedIds.length) return;
@@ -235,16 +267,20 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
         {/* Left: selected TCs (read-only) + start */}
         <div className="card section">
           <div className="row" style={{ marginBottom: 4 }}>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>Selected Test Cases</div>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>{reviewMode ? 'Approved Test Cases' : 'Selected Test Cases'}</div>
             <span className="spacer" />
             <button className="btn btn-secondary btn-sm" onClick={() => onNav('test-intake')}>
-              Edit in Test Intake →
+              {reviewMode ? 'Review in Test Intake →' : 'Edit in Test Intake →'}
             </button>
           </div>
           <p className="text-muted" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.5 }}>
             {orderedIds.length === 0
-              ? 'No test cases selected — all will run. Go to Test Intake to make a selection.'
-              : `${orderedIds.length} test case${orderedIds.length > 1 ? 's' : ''} queued — they run in the order below.`}
+              ? (reviewMode
+                  ? 'No approved test cases yet. Approve plans in Test Intake to make them runnable.'
+                  : 'No test cases selected — all will run. Go to Test Intake to make a selection.')
+              : (reviewMode
+                  ? `${runIds.length} of ${orderedIds.length} approved test case${orderedIds.length > 1 ? 's' : ''} will run — untick a row to exclude it. They run in the order below.`
+                  : `${orderedIds.length} test case${orderedIds.length > 1 ? 's' : ''} queued — they run in the order below.`)}
           </p>
 
           {tcLoading && <p className="text-muted" style={{ fontSize: 12 }}>Loading…</p>}
@@ -270,9 +306,16 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
                       display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px',
                       borderBottom: '1px solid var(--border)',
                       background: dragIdx === idx ? 'rgba(99,102,241,0.14)' : 'transparent',
+                      opacity: reviewMode && excluded.has(tc.test_id) ? 0.5 : 1,
                       cursor: 'grab',
                     }}
                   >
+                    {reviewMode && (
+                      <input type="checkbox" checked={!excluded.has(tc.test_id)}
+                        onClick={e => e.stopPropagation()} onChange={() => toggleExclude(tc.test_id)}
+                        title={excluded.has(tc.test_id) ? 'Excluded from this run — tick to include' : 'Included — untick to exclude'}
+                        style={{ cursor: 'pointer', accentColor: 'var(--accent)', width: 15, height: 15, flexShrink: 0 }} />
+                    )}
                     <span title="Drag to reorder" style={{ color: 'var(--muted)', fontSize: 15, userSelect: 'none' }}>≡</span>
                     <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', width: 18, textAlign: 'right', fontFamily: 'monospace' }}>{idx + 1}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -300,9 +343,14 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
             <input className="form-input" value={robotId} onChange={e => setRobotId(e.target.value)} style={{ width: 140 }} />
           </div>
 
-          <button className="btn btn-primary" onClick={startRun} disabled={starting}>
-            {starting ? '⏳ Starting…' : `▶ Start Run${orderedIds.length > 0 ? ` (${orderedIds.length} TCs)` : ' (all TCs)'}`}
+          <button className="btn btn-primary" onClick={startRun} disabled={starting || (reviewMode && runIds.length === 0)}>
+            {starting ? '⏳ Starting…' : `▶ Start Run${runIds.length > 0 ? ` (${runIds.length} TCs)` : (reviewMode ? ' (none)' : ' (all TCs)')}`}
           </button>
+          {reviewMode && runIds.length === 0 && (
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+              Approve at least one test plan in Test Intake (and keep it included) to start a run.
+            </div>
+          )}
 
           {status && (
             <div style={{ marginTop: 10, fontSize: 12, color: status.startsWith('Error') ? 'var(--red)' : 'var(--green)' }}>

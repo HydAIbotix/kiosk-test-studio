@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, annotatedScreenshotUrl, type TestCase, type TcConfig, type TcPlan, type TcPlanStep } from '../api/client';
+import { api, annotatedScreenshotUrl, type TestCase, type TcConfig, type TcPlan, type TcPlanStep, type TcReview } from '../api/client';
 
 // ── Plan storage key ───────────────────────────────────────────────────────────
 const PLAN_KEY = (id: string) => `tc_plan_${id}`;
@@ -106,6 +106,54 @@ function PlanStep({ step, idx, shotFor }: { step: TcPlanStep; idx: number; shotF
   );
 }
 
+// ── Pager (First ‹ Prev  1 2 … N  Next › End) ────────────────────────────────────
+// `statusOf` colours each numbered page by its review status so the reviewer sees progress at a glance.
+function windowedPages(cur: number, total: number): number[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i);
+  const out = new Set<number>([0, total - 1, cur, cur - 1, cur + 1]);
+  const pages = [...out].filter(p => p >= 0 && p < total).sort((a, b) => a - b);
+  const withGaps: number[] = [];
+  for (let i = 0; i < pages.length; i++) {
+    if (i > 0 && pages[i] - pages[i - 1] > 1) withGaps.push(-1); // ellipsis marker
+    withGaps.push(pages[i]);
+  }
+  return withGaps;
+}
+
+function Pager({ cur, total, go, statusOf }: {
+  cur: number; total: number; go: (i: number) => void;
+  statusOf?: (i: number) => 'approved' | 'rejected' | 'pending';
+}) {
+  if (total <= 1) return null;
+  const dot = (s?: string) => s === 'approved' ? 'var(--green)' : s === 'rejected' ? 'var(--red)' : 'var(--muted)';
+  return (
+    <div className="row" style={{ gap: 4, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' }}>
+      <button className="btn btn-secondary btn-sm" style={{ fontSize: 11 }} disabled={cur === 0} onClick={() => go(0)}>« First</button>
+      <button className="btn btn-secondary btn-sm" style={{ fontSize: 11 }} disabled={cur === 0} onClick={() => go(cur - 1)}>‹ Prev</button>
+      {windowedPages(cur, total).map((p, i) => p < 0
+        ? <span key={`e${i}`} style={{ color: 'var(--muted)', padding: '0 2px' }}>…</span>
+        : (
+          <button key={p} onClick={() => go(p)}
+            title={statusOf ? `Plan ${p + 1} — ${statusOf(p)}` : `Plan ${p + 1}`}
+            style={{
+              minWidth: 26, height: 26, borderRadius: 5, fontSize: 11, cursor: 'pointer',
+              border: `1px solid ${p === cur ? 'var(--accent)' : 'var(--border)'}`,
+              background: p === cur ? 'var(--accent)' : 'var(--surface)',
+              color: p === cur ? '#fff' : 'var(--text)',
+              position: 'relative', fontWeight: p === cur ? 700 : 400,
+            }}>
+            {p + 1}
+            {statusOf && (
+              <span style={{ position: 'absolute', top: 2, right: 3, width: 5, height: 5, borderRadius: 5, background: dot(statusOf(p)) }} />
+            )}
+          </button>
+        ))}
+      <button className="btn btn-secondary btn-sm" style={{ fontSize: 11 }} disabled={cur === total - 1} onClick={() => go(cur + 1)}>Next ›</button>
+      <button className="btn btn-secondary btn-sm" style={{ fontSize: 11 }} disabled={cur === total - 1} onClick={() => go(total - 1)}>End »</button>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
@@ -134,6 +182,26 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   const [planApproved, setPlanApproved]= useState(false);
   const [planRejecting, setPlanRejecting]= useState(false);
   const [planReason, setPlanReason]= useState('');
+
+  // ── Bulk plan-generation + review flow ─────────────────────────────────────────
+  // phase: 'list' = the classic per-TC table/detail (unchanged); 'generating' = bulk progress;
+  // 'review' = one plan at a time with Approve/Reject + pagination. Approvals gate the Execution page.
+  const [phase, setPhase]        = useState<'list' | 'generating' | 'review'>('list');
+  const [reviewPlans, setRvPlans]= useState<Record<string, TcPlan | null>>({});
+  const [reviews, setReviews]    = useState<Record<string, TcReview>>(() => api.getTcReviews());
+  const [cur, setCur]            = useState(0);
+  const [gen, setGen]            = useState<{ done: number; total: number; current: string; label: string }>(
+    { done: 0, total: 0, current: '', label: '' });
+  const cancelGenRef             = useRef(false);
+  const [busyId, setBusyId]      = useState('');       // a single plan being regenerated
+  const [rejecting, setRejecting]= useState(false);    // current-plan reject reason input open
+  const [rejReason, setRejReason]= useState('');
+  const [rejectAllOpen, setRejectAllOpen] = useState(false);
+  const [rejectAllReason, setRejectAllReason] = useState('');
+  // Review-phase plan editing (kept for parity with the list view's Edit; writes back to the cache).
+  const [rvEditing, setRvEditing]= useState(false);
+  const [rvSteps, setRvSteps]    = useState<TcPlanStep[]>([]);
+  const [rvSaved, setRvSaved]    = useState(false);
 
   useEffect(() => {
     api.getConfig().then(c => {
@@ -258,6 +326,132 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   const addStep = () => setEditedSt(prev => [...prev, { action: 'tap', channel: 'robot', description: '' }]);
   const removeStep = (i: number) => setEditedSt(prev => prev.filter((_, j) => j !== i));
 
+  // ── Review helpers ─────────────────────────────────────────────────────────────
+  // Persist a review-map update AND keep the run selection (`selected_tcs`, via `checked`) in sync:
+  // APPROVED plans (in test-case order) are exactly what the Execution page may run.
+  const applyReviews = (next: Record<string, TcReview>) => {
+    setReviews(next);
+    api.saveTcReviews(next);
+    const approvedOrder = cases.filter(c => next[c.test_id]?.status === 'approved').map(c => c.test_id);
+    setChecked(new Set(approvedOrder));   // effect persists to selected_tcs
+  };
+
+  // Build the Claude plan for one TC (force=regenerate, feedback=reject reason folded into the prompt).
+  const planFor = async (tc: TestCase, force: boolean, feedback: string): Promise<TcPlan | null> => {
+    if (!force) {
+      const cached = loadCachedPlan(tc.test_id, tc);
+      if (cached) return cached;
+    }
+    try {
+      const p = await api.getTcPlan({
+        test_id: tc.test_id, summary: tc.summary,
+        description: tc.description, steps_raw: tc.steps_raw,
+        expected_results_raw: tc.expected_results_raw,
+        ...(force ? { force: true } : {}),
+        ...(feedback ? { review_feedback: feedback } : {}),
+      });
+      saveCachedPlan(tc.test_id, p, tc);
+      return p;
+    } catch { return null; }
+  };
+
+  // Bulk generate/regenerate plans for EVERY test case, with live progress, then enter the review phase.
+  // force/feedback=regenerate all (used by "Reject All"): the reason steers Claude and reviews reset to pending.
+  const generateAll = async (opts: { force?: boolean; feedback?: string; label?: string } = {}) => {
+    const { force = false, feedback = '', label = 'Generating test plans with Claude' } = opts;
+    if (cases.length === 0) return;
+    cancelGenRef.current = false;
+    setGen({ done: 0, total: cases.length, current: cases[0]?.test_id ?? '', label });
+    setPhase('generating');
+    const nextPlans: Record<string, TcPlan | null> = { ...reviewPlans };
+    for (let i = 0; i < cases.length; i++) {
+      if (cancelGenRef.current) break;
+      const tc = cases[i];
+      setGen({ done: i, total: cases.length, current: tc.test_id, label });
+      nextPlans[tc.test_id] = await planFor(tc, force, feedback);
+    }
+    setRvPlans(nextPlans);
+    setGen(g => ({ ...g, done: cases.length, current: '' }));
+    if (cancelGenRef.current) { setPhase('list'); return; }
+    // Reviews: a (re)generated plan needs (re)review → pending, UNLESS it was already approved on a
+    // plain first-time generation (force/feedback wipe approvals since the plan content changed).
+    const nextReviews: Record<string, TcReview> = {};
+    for (const c of cases) {
+      const prev = reviews[c.test_id];
+      nextReviews[c.test_id] = (!force && !feedback && prev?.status === 'approved')
+        ? prev : { status: 'pending' };
+    }
+    applyReviews(nextReviews);
+    setCur(0); setRvEditing(false); setRejecting(false); setRejReason('');
+    setPhase('review');
+  };
+
+  const goReview = (i: number) => {
+    setCur(Math.max(0, Math.min(cases.length - 1, i)));
+    setRvEditing(false); setRejecting(false); setRejReason('');
+  };
+
+  const approveCur = () => {
+    const tc = cases[cur]; if (!tc) return;
+    applyReviews({ ...reviews, [tc.test_id]: { status: 'approved' } });
+  };
+
+  // Reject the current plan: capture the reason, regenerate THIS plan via Claude with the reason folded
+  // in, land back at 'pending' for re-review. The code-fixing of the plan is Claude's; we just re-ask.
+  const rejectCur = async () => {
+    const tc = cases[cur]; if (!tc || !rejReason.trim()) return;
+    const reason = rejReason.trim();
+    setBusyId(tc.test_id); setRejecting(false);
+    const p = await planFor(tc, true, reason);
+    setRvPlans(prev => ({ ...prev, [tc.test_id]: p }));
+    applyReviews({ ...reviews, [tc.test_id]: { status: 'pending', reason } });
+    setBusyId(''); setRejReason('');
+  };
+
+  const approveAll = () => {
+    const next: Record<string, TcReview> = {};
+    for (const c of cases) next[c.test_id] = { status: 'approved' };
+    applyReviews(next);
+  };
+
+  const submitRejectAll = async () => {
+    if (!rejectAllReason.trim()) return;
+    const reason = rejectAllReason.trim();
+    setRejectAllOpen(false); setRejectAllReason('');
+    await generateAll({ force: true, feedback: reason, label: 'Regenerating all plans with your feedback' });
+  };
+
+  // Review-phase edit (parity with list view) — operates on the current plan, saves to cache + state.
+  const curTc   = phase === 'review' ? cases[cur] : undefined;
+  const curPlan = curTc ? reviewPlans[curTc.test_id] ?? null : null;
+  const startRvEdit  = () => { if (curPlan) { setRvSteps(curPlan.steps.map(s => ({ ...s }))); setRvEditing(true); } };
+  const saveRvEdit   = () => {
+    if (!curPlan || !curTc) return;
+    const updated = { ...curPlan, steps: rvSteps };
+    saveCachedPlan(curTc.test_id, updated);
+    setRvPlans(prev => ({ ...prev, [curTc.test_id]: updated }));
+    setRvEditing(false); setRvSaved(true); setTimeout(() => setRvSaved(false), 2000);
+  };
+  const regenCur = async () => {
+    if (!curTc) return;
+    setBusyId(curTc.test_id);
+    deleteCachedPlan(curTc.test_id);
+    await api.deleteTcPlan(curTc.test_id).catch(() => {});
+    const p = await planFor(curTc, true, '');
+    setRvPlans(prev => ({ ...prev, [curTc.test_id]: p }));
+    applyReviews({ ...reviews, [curTc.test_id]: { status: 'pending' } });
+    setBusyId('');
+  };
+  const updateRvStep = (i: number, field: keyof TcPlanStep, val: string) =>
+    setRvSteps(prev => prev.map((s, j) => j === i ? { ...s, [field]: val } : s));
+
+  const reviewCounts = {
+    approved: cases.filter(c => reviews[c.test_id]?.status === 'approved').length,
+    pending:  cases.filter(c => !reviews[c.test_id] || reviews[c.test_id]?.status === 'pending').length,
+    total:    cases.length,
+  };
+  const havePlans = cases.length > 0 && cases.some(c => reviewPlans[c.test_id] || loadCachedPlan(c.test_id, c));
+
   const filtered = cases.filter(c =>
     (!selectedOnly || checked.has(c.test_id)) &&
     (search === '' ||
@@ -276,6 +470,236 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   const selCfg      = selected ? (tcConfigs[selected.test_id] || api.getTcConfig(selected.test_id) || {}) : {};
   const allFilled   = credFields.every(f => selCfg[f.key]?.trim());
 
+  // ── PHASE: generating ──────────────────────────────────────────────────────────
+  if (phase === 'generating') {
+    const pct = gen.total ? Math.round((gen.done / gen.total) * 100) : 0;
+    return (
+      <div>
+        <div className="card section">
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>{gen.label}…</div>
+          <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>
+            Claude is generating an execution plan for each test case. You can review them as soon as this finishes.
+          </p>
+          <div style={{ height: 10, background: 'var(--surface2)', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
+            <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', transition: 'width 0.3s ease' }} />
+          </div>
+          <div className="row" style={{ fontSize: 12 }}>
+            <span style={{ color: 'var(--text)' }}>
+              {gen.done} / {gen.total} plans
+              {gen.current && <span style={{ color: 'var(--muted)' }}> · generating <code className="text-accent">{gen.current}</code></span>}
+            </span>
+            <span className="spacer" />
+            <button className="btn btn-secondary btn-sm" onClick={() => { cancelGenRef.current = true; }}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── PHASE: review ──────────────────────────────────────────────────────────────
+  if (phase === 'review' && curTc) {
+    const rvStatus = reviews[curTc.test_id]?.status ?? 'pending';
+    const rvReason = reviews[curTc.test_id]?.reason;
+    const busy     = busyId === curTc.test_id;
+    const rvCred   = (curPlan?.required_config ?? []).filter(f => f && f.key).map(f => ({ ...f, label: f.label || f.key }));
+    const rvCfg    = tcConfigs[curTc.test_id] || api.getTcConfig(curTc.test_id) || {};
+    const statusOf = (i: number) => (reviews[cases[i]?.test_id]?.status ?? 'pending') as 'approved' | 'rejected' | 'pending';
+    const badge = rvStatus === 'approved'
+      ? <span className="badge badge-green">✓ Approved</span>
+      : <span className="badge badge-yellow">⏳ Pending review</span>;
+
+    return (
+      <div>
+        {/* Top bar — Approve All / Reject All + progress */}
+        <div className="card section">
+          <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Review Test Plans</div>
+              <p className="text-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                {reviewCounts.approved} approved · {reviewCounts.pending} pending of {reviewCounts.total}.
+                Only <strong>approved</strong> plans run on the Execution page.
+              </p>
+            </div>
+            <span className="spacer" />
+            <div className="row" style={{ gap: 8 }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => setPhase('list')}>← Back to list</button>
+              <button className="btn btn-primary btn-sm" onClick={approveAll}>✓ Approve All</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setRejectAllOpen(o => !o)}>✕ Reject All</button>
+              {reviewCounts.approved > 0 && (
+                <button className="btn btn-primary btn-sm" onClick={() => onNav('execution')}>Proceed to Execution →</button>
+              )}
+            </div>
+          </div>
+          {rejectAllOpen && (
+            <div className="card card-sm" style={{ marginTop: 10, borderColor: 'var(--yellow)', background: 'rgba(234,179,8,0.08)' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Reject all — reason for Claude</div>
+              <textarea value={rejectAllReason} onChange={e => setRejectAllReason(e.target.value)} rows={3}
+                placeholder="What should Claude change across ALL plans? This is folded into the regeneration of every test case."
+                style={{ width: '100%', fontSize: 13, padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', resize: 'vertical' }} />
+              <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                <button className="btn btn-danger btn-sm" onClick={submitRejectAll} disabled={!rejectAllReason.trim()}>Reject all &amp; regenerate</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => { setRejectAllOpen(false); setRejectAllReason(''); }}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Top pager */}
+        <div className="card section" style={{ paddingTop: 10, paddingBottom: 10 }}>
+          <Pager cur={cur} total={cases.length} go={goReview} statusOf={statusOf} />
+        </div>
+
+        <div className="grid-2">
+          {/* LEFT — the generated plan + its raw test case below */}
+          <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            <div className="row" style={{ marginBottom: 10 }}>
+              <div>
+                <code className="text-accent" style={{ fontSize: 12 }}>{curTc.test_id}</code>
+                <span style={{ marginLeft: 8 }}>{badge}</span>
+                <div style={{ fontWeight: 600, marginTop: 3 }}>{curTc.summary}</div>
+                <div className="text-muted" style={{ fontSize: 11, marginTop: 2 }}>Plan {cur + 1} of {cases.length}</div>
+              </div>
+              <span className="spacer" />
+              <div className="row" style={{ gap: 6 }}>
+                {rvSaved && <span style={{ fontSize: 10, color: 'var(--green)' }}>✓ saved!</span>}
+                {curPlan && !rvEditing && !busy && (
+                  <>
+                    <button className="btn btn-secondary btn-sm" onClick={startRvEdit} style={{ fontSize: 11 }}>✏ Edit</button>
+                    <button className="btn btn-secondary btn-sm" onClick={regenCur} style={{ fontSize: 11 }} title="Regenerate via Claude">↺ Regenerate</button>
+                  </>
+                )}
+                {rvEditing && (
+                  <>
+                    <button className="btn btn-primary btn-sm" onClick={saveRvEdit} style={{ fontSize: 11 }}>Save</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => setRvEditing(false)} style={{ fontSize: 11 }}>Cancel</button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="form-label">Execution Plan</div>
+            {busy ? (
+              <div style={{ padding: '12px 0' }}>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>⏳ Regenerating plan with Claude…</div>
+                <div style={{ height: 3, background: 'var(--surface2)', borderRadius: 2, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', background: 'var(--accent)', animation: 'explore-progress 1.5s ease-in-out infinite', width: '35%' }} />
+                </div>
+              </div>
+            ) : !curPlan ? (
+              <div style={{ padding: '10px 12px', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.3)', borderRadius: 6, fontSize: 12 }}>
+                <span style={{ color: 'var(--red)' }}>✗ No plan generated for this test case.</span>
+                <button className="btn btn-secondary btn-sm" style={{ marginLeft: 12 }} onClick={regenCur}>Generate</button>
+              </div>
+            ) : rvEditing ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {rvSteps.map((s, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, padding: '4px 8px', fontSize: 12 }}>
+                    <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 20 }}>{i + 1}.</span>
+                    <input value={s.description} onChange={e => updateRvStep(i, 'description', e.target.value)}
+                      style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 12 }} />
+                    <select value={s.channel} onChange={e => updateRvStep(i, 'channel', e.target.value as TcPlanStep['channel'])}
+                      style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontSize: 11, padding: '2px 4px' }}>
+                      <option value="robot">🤖 robot</option><option value="web">🌐 web</option>
+                      <option value="db">🗄 db</option><option value="validation">✓ validate</option>
+                    </select>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {curPlan.steps.map((s, i) => <PlanStep key={i} step={s} idx={i} shotFor={shotFor} />)}
+              </div>
+            )}
+            <p className="text-muted" style={{ fontSize: 11, marginTop: 6 }}>
+              🤖 robot = kiosk touchscreen tap/type · 🌐 web = external app · 🗄 db = database check · ✓ validate = assertion
+            </p>
+
+            {/* Required inputs for this TC (unchanged behaviour) */}
+            {rvCred.length > 0 && (
+              <div className="form-group" style={{ marginTop: 8 }}>
+                <div className="form-label">Required Test Inputs <span style={{ fontWeight: 400, color: 'var(--muted)' }}>— stored in browser</span></div>
+                <div className="card card-sm">
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    {rvCred.map(f => (
+                      <div key={f.key}>
+                        <label className="form-label">{f.label}</label>
+                        <input className="form-input" type={f.type === 'password' ? 'password' : 'text'}
+                          value={rvCfg[f.key] || ''} onChange={e => saveCfg(curTc.test_id, f.key, e.target.value)}
+                          placeholder={`Enter ${f.label.toLowerCase()}`} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Raw test case below the plan */}
+            <div className="form-group" style={{ marginTop: 8 }}>
+              <div className="form-label">Description</div>
+              <div className="raw-box">{curTc.description || '—'}</div>
+            </div>
+            <div className="form-group">
+              <div className="form-label">Raw Steps</div>
+              <div className="raw-box">{curTc.steps_raw || '—'}</div>
+            </div>
+            <div className="form-group">
+              <div className="form-label">Expected Results</div>
+              <div className="raw-box">{curTc.expected_results_raw || '—'}</div>
+            </div>
+
+            {/* Bottom pager under each plan */}
+            <div style={{ marginTop: 6 }}>
+              <Pager cur={cur} total={cases.length} go={goReview} statusOf={statusOf} />
+            </div>
+          </div>
+
+          {/* RIGHT — Review (approve / reject) */}
+          <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Review</div>
+            <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>
+              Approve to make this test case runnable, or reject with a reason — Claude regenerates this plan using your feedback.
+            </p>
+
+            <div className="card card-sm" style={{
+              borderColor: rvStatus === 'approved' ? 'rgba(34,197,94,0.4)' : 'rgba(234,179,8,0.35)',
+              background: rvStatus === 'approved' ? 'rgba(34,197,94,0.06)' : 'rgba(234,179,8,0.05)', marginBottom: 12 }}>
+              <div style={{ fontSize: 13, marginBottom: 8 }}>
+                Status: {badge}
+              </div>
+              {rvReason && (
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>
+                  Last reject reason fed to Claude: <em>“{rvReason}”</em>
+                </div>
+              )}
+              {!rejecting ? (
+                <div className="row" style={{ gap: 8 }}>
+                  <button className="btn btn-primary btn-sm" onClick={approveCur} disabled={busy || rvStatus === 'approved' || !curPlan}>✓ Approve</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setRejecting(true); setRejReason(rvReason || ''); }} disabled={busy || !curPlan}>✕ Reject</button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <textarea value={rejReason} onChange={e => setRejReason(e.target.value)} rows={4}
+                    placeholder="What's wrong with this plan? Claude uses this when regenerating THIS test case."
+                    style={{ width: '100%', fontSize: 13, padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', resize: 'vertical' }} />
+                  <div className="row" style={{ gap: 8 }}>
+                    <button className="btn btn-danger btn-sm" onClick={rejectCur} disabled={!rejReason.trim()}>Submit reject &amp; regenerate</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => { setRejecting(false); setRejReason(''); }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="row" style={{ gap: 8 }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => goReview(cur - 1)} disabled={cur === 0}>‹ Previous</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => goReview(cur + 1)} disabled={cur === cases.length - 1}>Next ›</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── PHASE: list (classic) ────────────────────────────────────────────────────────
   return (
     <div>
       {/* Multi-device guidance */}
@@ -320,6 +744,42 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
           </div>
         </div>
       </div>
+
+      {/* Bulk plan generation + review entry */}
+      {cases.length > 0 && (
+        <div className="card section" style={{ borderColor: 'rgba(34,197,94,0.35)', background: 'rgba(34,197,94,0.05)' }}>
+          <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Generate &amp; review test plans</div>
+              <p className="text-muted" style={{ fontSize: 12, marginTop: 2, lineHeight: 1.5 }}>
+                Generate a Claude execution plan for all {cases.length} test case{cases.length > 1 ? 's' : ''} at once, then
+                approve or reject each one. Only approved plans run on the Execution page.
+                {reviewCounts.approved > 0 && <> · <strong>{reviewCounts.approved} approved</strong> so far.</>}
+              </p>
+            </div>
+            <span className="spacer" />
+            <div className="row" style={{ gap: 8 }}>
+              <button className="btn btn-primary btn-sm" onClick={() => generateAll()}>
+                ⚙ Generate Test Plans ({cases.length})
+              </button>
+              {havePlans && (
+                <button className="btn btn-secondary btn-sm" onClick={() => {
+                  // Enter review using already-cached plans without re-calling Claude.
+                  const loaded: Record<string, TcPlan | null> = {};
+                  const nextReviews = { ...reviews };
+                  for (const c of cases) {
+                    loaded[c.test_id] = reviewPlans[c.test_id] ?? loadCachedPlan(c.test_id, c);
+                    if (!nextReviews[c.test_id]) nextReviews[c.test_id] = { status: 'pending' };
+                  }
+                  setRvPlans(loaded); applyReviews(nextReviews); setCur(0); setPhase('review');
+                }}>
+                  Review plans →
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Selection banner */}
       <div className="card section" style={{
