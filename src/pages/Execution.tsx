@@ -269,8 +269,9 @@ export default function Execution({ onNav }: { onNav: (p: string) => void }) {
           <div className="row" style={{ marginBottom: 4 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>{reviewMode ? 'Approved Test Cases' : 'Selected Test Cases'}</div>
             <span className="spacer" />
-            <button className="btn btn-secondary btn-sm" onClick={() => onNav('test-intake')}>
-              {reviewMode ? 'Review in Test Intake →' : 'Edit in Test Intake →'}
+            <button className="btn btn-secondary btn-sm"
+              onClick={() => { if (reviewMode) { try { localStorage.setItem('intake_open_review', '1'); } catch { /* ignore */ } } onNav('test-intake'); }}>
+              {reviewMode ? '← Back to Review Plan' : 'Edit in Test Intake →'}
             </button>
           </div>
           <p className="text-muted" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.5 }}>

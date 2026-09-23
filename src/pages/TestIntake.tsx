@@ -354,6 +354,25 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
     total:    cases.length,
   };
   const havePlans = cases.length > 0 && cases.some(c => reviewPlans[c.test_id] || loadCachedPlan(c.test_id, c));
+  // Every case has a plan → generation is done. The Generate button is then disabled (regeneration goes
+  // through the Reject-plans flow, not a re-generate-all).
+  const allGenerated = cases.length > 0 && cases.every(c => reviewPlans[c.test_id] || loadCachedPlan(c.test_id, c));
+
+  // Deep-link: the Execution page's "Back to Review Plan" sets this flag so Test Intake opens straight
+  // into the review screen (once plans have loaded) instead of the setup screen.
+  const openReviewRef = useRef(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('intake_open_review') === '1') { localStorage.removeItem('intake_open_review'); openReviewRef.current = true; }
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    if (openReviewRef.current && cases.length > 0 && cases.some(c => reviewPlans[c.test_id] || loadCachedPlan(c.test_id, c))) {
+      openReviewRef.current = false;
+      openReview();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cases]);
 
   // Prune stale reviews to the CURRENT test cases. After a reset (or any re-import that drops test ids),
   // an old approved/rejected status must not linger for a test id that no longer exists — that was the
@@ -665,14 +684,18 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
         ) : (
           <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
             <p className="text-muted" style={{ fontSize: 12, margin: 0, lineHeight: 1.5, flex: 1, minWidth: 240 }}>
-              Generate a Claude execution plan for all {cases.length} test case{cases.length > 1 ? 's' : ''} at once, then
-              approve or reject each one. Only approved plans run on the Execution page.
+              {allGenerated
+                ? <>All {cases.length} plan{cases.length > 1 ? 's are' : ' is'} generated — <strong>Review plans</strong> to approve/reject. To regenerate, reject them and use the Rejected-plans flow.</>
+                : <>Generate a Claude execution plan for all {cases.length} test case{cases.length > 1 ? 's' : ''} at once, then approve or reject each one. Only approved plans run on the Execution page.</>}
               {reviewCounts.approved > 0 && <> · <strong>{reviewCounts.approved} approved</strong> so far.</>}
             </p>
             <span className="spacer" />
             <div className="row" style={{ gap: 8 }}>
-              <button className="btn btn-primary btn-sm" onClick={generateAll}>⚙ Generate Test Plans ({cases.length})</button>
-              {havePlans && <button className="btn btn-secondary btn-sm" onClick={openReview}>Review plans →</button>}
+              <button className="btn btn-primary btn-sm" onClick={generateAll} disabled={allGenerated}
+                title={allGenerated ? 'All plans are generated — reject a plan and use the Rejected-plans flow to regenerate' : undefined}>
+                ⚙ Generate Test Plans ({cases.length})
+              </button>
+              {havePlans && <button className="btn btn-primary btn-sm" onClick={openReview}>Review plans →</button>}
             </div>
           </div>
         )}
