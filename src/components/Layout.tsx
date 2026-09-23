@@ -70,11 +70,15 @@ function ResetButton() {
       await api.resetAll(ctrl.signal);
       if (ctrl.signal.aborted) return;   // user cancelled — do nothing
       // Test cases are deleted server-side now, so clear their client-side artifacts too:
-      // cached plans, per-test field configs, and the selection list. (Credentials preserved.)
+      // cached plans, per-test field configs, the selection list, the plan-review status map, and the
+      // execution exclude set. Otherwise a re-upload with the same test IDs would inherit stale
+      // approved/rejected statuses. (Credentials preserved.)
       Object.keys(localStorage).forEach(k => {
         if (k.startsWith('tc_plan_') || k.startsWith('tc_config_')) localStorage.removeItem(k);
       });
       localStorage.removeItem('selected_tcs');
+      localStorage.removeItem('tc_reviews');
+      localStorage.removeItem('exec_excluded');
       setDone(true);
       setTimeout(() => window.location.reload(), 1200);
     } catch (e) {

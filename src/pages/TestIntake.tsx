@@ -58,22 +58,23 @@ function isInteractionStep(step: TcPlanStep): boolean {
   return /tap|click|type|press|select|enter/.test(a) || (step.px != null && step.py != null) || !!step.element_id;
 }
 
-function PlanStep({ step, idx, shotFor }: { step: TcPlanStep; idx: number; shotFor?: (screenId?: string) => string | undefined }) {
+// A read-only, CLICKABLE plan step. Selecting it shows that step's annotated screenshot on the review
+// side (no thumbnails here). `hasShot` marks steps that have a screenshot to view (📷).
+function PlanStep({ step, idx, selected, hasShot, onSelect }: {
+  step: TcPlanStep; idx: number; selected?: boolean; hasShot?: boolean; onSelect?: () => void;
+}) {
   const isRobot = step.channel === 'robot';
   const hasCo   = isRobot && step.px != null && step.py != null;
-  const [zoom, setZoom] = useState(false);
-  const shot = isInteractionStep(step) ? shotFor?.(step.screen_id) : undefined;
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, padding: '6px 10px', fontSize: 12 }}>
+    <div onClick={onSelect}
+      title={hasShot ? 'Click to view this step’s annotated screenshot' : undefined}
+      style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12, cursor: onSelect ? 'pointer' : 'default',
+        background: selected ? 'var(--surface2)' : 'var(--bg)', borderRadius: 5, padding: '6px 10px',
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}` }}>
       <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 20, paddingTop: 2 }}>{idx + 1}.</span>
-      {shot && (
-        <img src={annotatedScreenshotUrl(shot)} alt={`${step.screen_id} annotated`} onClick={() => setZoom(true)}
-          title="Click to enlarge the annotated screenshot"
-          style={{ width: 54, height: 40, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)',
-            cursor: 'zoom-in', flexShrink: 0, background: '#000' }} />
-      )}
       <div style={{ flex: 1, lineHeight: 1.6 }}>
         <span style={{ color: 'var(--text)' }}>{step.description}</span>
+        {hasShot && <span title="Has annotated screenshot" style={{ marginLeft: 6, fontSize: 11 }}>📷</span>}
         {hasCo && (
           <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', fontFamily: 'monospace' }}>
             [{step.screen_id} · {step.element_id} · ({step.px},{step.py})]
@@ -87,20 +88,6 @@ function PlanStep({ step, idx, shotFor }: { step: TcPlanStep; idx: number; shotF
         )}
       </div>
       <ChannelBadge ch={step.channel} />
-      {zoom && shot && (
-        <div onClick={() => setZoom(false)}
-          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.8)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, cursor: 'zoom-out' }}>
-          <div onClick={e => e.stopPropagation()} style={{ maxWidth: '92vw', maxHeight: '92vh', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff', fontSize: 13 }}>
-              <span>Step {idx + 1} · {step.screen_id}{step.element_id ? ` · ${step.element_id}` : ''}</span>
-              <button className="btn btn-secondary btn-sm" onClick={() => setZoom(false)}>✕ Close</button>
-            </div>
-            <img src={annotatedScreenshotUrl(shot)} alt={`${step.screen_id} annotated`}
-              style={{ maxWidth: '92vw', maxHeight: '84vh', objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)' }} />
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -173,11 +160,13 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   const [explorerOk, setExplorerOk]= useState(true);
 
   // Bulk generation + review state
-  const [phase, setPhase]        = useState<'setup' | 'review'>('setup');
+  const [phase, setPhase]        = useState<'setup' | 'review' | 'rejected'>('setup');
   const [generating, setGen8]    = useState(false);
   const [reviewPlans, setRvPlans]= useState<Record<string, TcPlan | null>>({});
   const [reviews, setReviews]    = useState<Record<string, TcReview>>(() => api.getTcReviews());
   const [cur, setCur]            = useState(0);
+  const [selStep, setSelStep]    = useState(0);        // which plan step's screenshot is shown on the right
+  const [zoomShot, setZoomShot]  = useState<string | null>(null);   // full-screen preview of a step screenshot
   const [gen, setGen]            = useState<{ done: number; total: number; current: string; label: string }>(
     { done: 0, total: 0, current: '', label: '' });
   const cancelGenRef             = useRef(false);
@@ -185,8 +174,7 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   const [rejReason, setRejReason]= useState('');
   const [rejectAllOpen, setRejectAllOpen] = useState(false);
   const [rejectAllReason, setRejectAllReason] = useState('');
-  // Rejected-plans window
-  const [rejectedOpen, setRejectedOpen] = useState(false);
+  // Rejected-plans view (its own screen — not an overlay)
   const [rejSel, setRejSel]      = useState<Set<string>>(new Set());
   const [regenBusy, setRegenBusy]= useState(false);
 
@@ -348,10 +336,11 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
     setRvPlans(nextPlans);
     applyReviews(nextReviews);
     setGen(g => ({ ...g, done: ids.length, current: '' }));
-    setRegenBusy(false); setRejectedOpen(false); setRejSel(new Set());
-    // Land the reviewer on the first regenerated plan.
+    setRegenBusy(false); setRejSel(new Set());
+    // Land the reviewer back on the review screen, at the first regenerated plan.
     const firstIdx = cases.findIndex(c => ids.includes(c.test_id));
     if (firstIdx >= 0) setCur(firstIdx);
+    setPhase('review');
   };
 
   const curTc   = phase === 'review' ? cases[cur] : undefined;
@@ -366,6 +355,47 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   };
   const havePlans = cases.length > 0 && cases.some(c => reviewPlans[c.test_id] || loadCachedPlan(c.test_id, c));
 
+  // Prune stale reviews to the CURRENT test cases. After a reset (or any re-import that drops test ids),
+  // an old approved/rejected status must not linger for a test id that no longer exists — that was the
+  // "1 approved so far" / phantom-approved bug. Runs only once cases have loaded (never wipes on the
+  // empty initial state).
+  useEffect(() => {
+    if (cases.length === 0) return;
+    const valid = new Set(cases.map(c => c.test_id));
+    const current = api.getTcReviews();
+    const pruned: Record<string, TcReview> = {};
+    let changed = false;
+    for (const [id, r] of Object.entries(current)) {
+      if (valid.has(id)) pruned[id] = r; else changed = true;
+    }
+    if (changed) applyReviews(pruned);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cases]);
+
+  // When the reviewed plan changes, default the selected step to the first one that has a screenshot.
+  useEffect(() => {
+    if (phase !== 'review' || !curPlan) return;
+    const first = curPlan.steps.findIndex(s => isInteractionStep(s) && shotFor(s.screen_id));
+    setSelStep(first >= 0 ? first : 0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cur, phase, reviewPlans]);
+
+  // ── REJECTED phase (its own screen) ───────────────────────────────────────────────
+  if (phase === 'rejected') {
+    return (
+      <RejectedView
+        rejected={rejectedList}
+        reviews={reviews}
+        selected={rejSel}
+        setSelected={setRejSel}
+        busy={regenBusy}
+        progress={regenBusy ? gen : null}
+        onRegenerate={() => regenerateSelected([...rejSel])}
+        onBack={() => { if (!regenBusy) setPhase('review'); }}
+      />
+    );
+  }
+
   // ── REVIEW phase ────────────────────────────────────────────────────────────────
   if (phase === 'review' && curTc) {
     const rvStatus = reviews[curTc.test_id]?.status ?? 'pending';
@@ -378,9 +408,9 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
       : rvStatus === 'rejected'
       ? <span className="badge badge-red">✕ Rejected (queued)</span>
       : <span className="badge badge-yellow">⏳ Pending review</span>;
-    // Steps whose annotated screenshot we can show on the review side.
-    const shotSteps = (curPlan?.steps ?? []).map((s, i) => ({ s, i, shot: isInteractionStep(s) ? shotFor(s.screen_id) : undefined }))
-      .filter(x => !!x.shot);
+    // The single step selected on the left, and its annotated screenshot (shown on the right).
+    const selStepObj = curPlan?.steps[selStep];
+    const selShot = selStepObj && isInteractionStep(selStepObj) ? shotFor(selStepObj.screen_id) : undefined;
 
     return (
       <div>
@@ -399,9 +429,9 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
               <button className="btn btn-secondary btn-sm" onClick={() => setPhase('setup')}>← Back</button>
               <button className="btn btn-primary btn-sm" onClick={approveAll}>✓ Approve All</button>
               <button className="btn btn-secondary btn-sm" onClick={() => setRejectAllOpen(o => !o)}>✕ Reject All</button>
-              <button className="btn btn-secondary btn-sm" onClick={() => { setRejSel(new Set(rejectedList.map(c => c.test_id))); setRejectedOpen(true); }}
+              <button className="btn btn-secondary btn-sm" onClick={() => { setRejSel(new Set(rejectedList.map(c => c.test_id))); setPhase('rejected'); }}
                 disabled={reviewCounts.rejected === 0}
-                title="Review rejected plans and regenerate them with Claude">
+                title="Open the rejected plans screen and regenerate them with Claude">
                 🗂 Rejected plans ({reviewCounts.rejected})
               </button>
               {reviewCounts.approved > 0 && (
@@ -443,11 +473,16 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {curPlan.steps.map((s, i) => <PlanStep key={i} step={s} idx={i} shotFor={shotFor} />)}
+                {curPlan.steps.map((s, i) => (
+                  <PlanStep key={i} step={s} idx={i}
+                    selected={selStep === i}
+                    hasShot={!!(isInteractionStep(s) && shotFor(s.screen_id))}
+                    onSelect={() => setSelStep(i)} />
+                ))}
               </div>
             )}
             <p className="text-muted" style={{ fontSize: 11, marginTop: 6 }}>
-              🤖 robot = kiosk touchscreen tap/type · 🌐 web = external app · 🗄 db = database check · ✓ validate = assertion
+              Click a step (📷 = has a screenshot) to view its annotated image on the right. · 🤖 robot · 🌐 web · 🗄 db · ✓ validate
             </p>
 
             {/* Required inputs for this TC (unchanged behaviour) */}
@@ -528,45 +563,41 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
               <button className="btn btn-secondary btn-sm" onClick={() => goReview(cur + 1)} disabled={cur === cases.length - 1}>Next ›</button>
             </div>
 
-            {/* Per-step annotated screenshots — so coordinates can be verified without opening each one */}
-            <div className="form-label">Step Screenshots (annotated)</div>
-            {shotSteps.length === 0 ? (
+            {/* Annotated screenshot of the SELECTED step only — so coordinates are verifiable in place */}
+            <div className="form-label">Step Screenshot (annotated)</div>
+            {!selStepObj ? (
+              <p className="text-muted" style={{ fontSize: 12 }}>Select a step on the left.</p>
+            ) : !selShot ? (
               <p className="text-muted" style={{ fontSize: 12 }}>
-                No annotated screenshots for this plan's steps yet — run the App Explorer to capture them.
+                Step {selStep + 1} has no annotated screenshot. Click a step marked 📷 on the left to view its image
+                (run the App Explorer if none of the steps have one).
               </p>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 620, overflowY: 'auto' }}>
-                {shotSteps.map(({ s, i, shot }) => (
-                  <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', background: 'var(--bg)' }}>
-                    <div style={{ fontSize: 11, padding: '5px 8px', background: 'var(--surface2)', color: 'var(--text)', lineHeight: 1.5 }}>
-                      <strong>{i + 1}.</strong> {s.description}
-                      {s.px != null && s.py != null && (
-                        <span style={{ marginLeft: 6, color: 'var(--muted)', fontFamily: 'monospace' }}>
-                          [{s.screen_id} · {s.element_id} · ({s.px},{s.py})]
-                        </span>
-                      )}
-                    </div>
-                    <img src={annotatedScreenshotUrl(shot!)} alt={`${s.screen_id} annotated`}
-                      style={{ width: '100%', display: 'block', background: '#000' }} />
-                  </div>
-                ))}
+              <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', background: 'var(--bg)' }}>
+                <div style={{ fontSize: 11, padding: '5px 8px', background: 'var(--surface2)', color: 'var(--text)', lineHeight: 1.5 }}>
+                  <strong>{selStep + 1}.</strong> {selStepObj.description}
+                  {selStepObj.px != null && selStepObj.py != null && (
+                    <span style={{ marginLeft: 6, color: 'var(--muted)', fontFamily: 'monospace' }}>
+                      [{selStepObj.screen_id} · {selStepObj.element_id} · ({selStepObj.px},{selStepObj.py})]
+                    </span>
+                  )}
+                </div>
+                <img src={annotatedScreenshotUrl(selShot)} alt={`${selStepObj.screen_id} annotated`}
+                  onClick={() => setZoomShot(selShot)} title="Click to enlarge"
+                  style={{ width: '100%', display: 'block', background: '#000', cursor: 'zoom-in' }} />
               </div>
             )}
           </div>
         </div>
 
-        {/* Rejected-plans window */}
-        {rejectedOpen && (
-          <RejectedWindow
-            rejected={rejectedList}
-            reviews={reviews}
-            selected={rejSel}
-            setSelected={setRejSel}
-            busy={regenBusy}
-            progress={regenBusy ? gen : null}
-            onRegenerate={() => regenerateSelected([...rejSel])}
-            onClose={() => { if (!regenBusy) setRejectedOpen(false); }}
-          />
+        {/* Full-screen preview of a step screenshot */}
+        {zoomShot && (
+          <div onClick={() => setZoomShot(null)}
+            style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.8)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, cursor: 'zoom-out' }}>
+            <img src={annotatedScreenshotUrl(zoomShot)} alt="annotated screenshot"
+              style={{ maxWidth: '92vw', maxHeight: '90vh', objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)' }} />
+          </div>
         )}
       </div>
     );
@@ -650,9 +681,10 @@ export default function TestIntake({ onNav }: { onNav: (p: string) => void }) {
   );
 }
 
-// ── Rejected-plans window ────────────────────────────────────────────────────────
-// A floating table of rejected plans + their reasons. Select all / individual, then regenerate.
-function RejectedWindow({ rejected, reviews, selected, setSelected, busy, progress, onRegenerate, onClose }: {
+// ── Rejected-plans screen ────────────────────────────────────────────────────────
+// A DEDICATED screen (not an overlay) listing rejected plans + their reasons. Select all / individual,
+// then regenerate — each is re-planned by Claude with its saved reason and returned to pending.
+function RejectedView({ rejected, reviews, selected, setSelected, busy, progress, onRegenerate, onBack }: {
   rejected: TestCase[];
   reviews: Record<string, TcReview>;
   selected: Set<string>;
@@ -660,7 +692,7 @@ function RejectedWindow({ rejected, reviews, selected, setSelected, busy, progre
   busy: boolean;
   progress: { done: number; total: number; current: string; label: string } | null;
   onRegenerate: () => void;
-  onClose: () => void;
+  onBack: () => void;
 }) {
   const allSel = rejected.length > 0 && rejected.every(c => selected.has(c.test_id));
   const toggle = (id: string) => {
@@ -671,14 +703,12 @@ function RejectedWindow({ rejected, reviews, selected, setSelected, busy, progre
   const toggleAll = () => setSelected(allSel ? new Set() : new Set(rejected.map(c => c.test_id)));
 
   return (
-    <div onClick={onClose}
-      style={{ position: 'fixed', inset: 0, zIndex: 1200, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <div onClick={e => e.stopPropagation()} className="card"
-        style={{ width: 'min(920px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div>
+      <div className="card section" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div className="row">
-          <div style={{ fontWeight: 700, fontSize: 15 }}>Rejected Test Plans ({rejected.length})</div>
+          <button className="btn btn-secondary btn-sm" onClick={onBack} disabled={busy}>← Back to review</button>
           <span className="spacer" />
-          <button className="btn btn-secondary btn-sm" onClick={onClose} disabled={busy}>✕ Close</button>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>Rejected Test Plans ({rejected.length})</div>
         </div>
         <p className="text-muted" style={{ fontSize: 12, margin: 0 }}>
           Select the plans to regenerate — each is re-planned by Claude using its saved rejection reason, then returned to
@@ -728,7 +758,7 @@ function RejectedWindow({ rejected, reviews, selected, setSelected, busy, progre
         <div className="row" style={{ gap: 8 }}>
           <span className="text-muted" style={{ fontSize: 12 }}>{selected.size} selected</span>
           <span className="spacer" />
-          <button className="btn btn-secondary btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-secondary btn-sm" onClick={onBack} disabled={busy}>Cancel</button>
           <button className="btn btn-primary btn-sm" onClick={onRegenerate} disabled={busy || selected.size === 0}>
             {busy ? '⏳ Regenerating…' : `↺ Regenerate selected (${selected.size})`}
           </button>
