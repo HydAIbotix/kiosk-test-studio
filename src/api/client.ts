@@ -443,6 +443,7 @@ export type RepairStage = {
   opened?: RepairPrOutcome;
   deleted?: RepairPrDeleteOutcome;
   retest_blocked?: boolean; retest_note?: string;   // pr — the retest didn't pass, so the PR was gated
+  open_error?: string;   // pr — retest PASSED but the auto push/PR-create failed (e.g. missing GITHUB_TOKEN)
   // retest — the verification re-run of the failed test (fix → rebuild → retest → PR). run_id links the real run.
   run_id?: string; passed?: boolean; outcome?: string; total?: number;
   scope?: 'suite' | 'test'; suite_passed?: number; suite_total?: number;   // re-ran the whole suite vs just the test

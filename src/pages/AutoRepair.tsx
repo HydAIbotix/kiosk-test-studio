@@ -369,6 +369,8 @@ function RepairPipeline({ job, running, onUpdated }: {
                 {retestFailed && ` But re-running ${job.test_id || 'the test'} still failed, so the PR was not raised automatically`
                   + ' (check the running app serves the fixed code) — you can open it manually below.'}
                 {!retestStage && prStage?.prepared && ' A PR branch is ready.'}
+                {retestStage?.passed && prStage?.open_error && !prStage?.opened?.opened &&
+                  ' The automatic PR push failed — see below; click Open PR to retry.'}
               </span>
               {prStage?.prepared && !prStage?.opened?.opened && (
                 prConfirm ? (
@@ -431,6 +433,12 @@ function RepairPipeline({ job, running, onUpdated }: {
             </div>
           )}
           {prErr && <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--red)' }}>✕ {prErr}</p>}
+          {!prErr && prStage?.open_error && !prStage?.opened?.opened && (
+            <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--yellow)' }}>
+              ⚠ Auto-open of the PR failed: {prStage.open_error}
+              {' '}(commonly a missing/expired <code>GITHUB_TOKEN</code> on the VM — set it in <code>.env</code> and restart, then click Open PR).
+            </p>
+          )}
         </div>
       )}
     </>
