@@ -521,7 +521,7 @@ function RetestOverlay({ runId, testId, onClose }: { runId: string; testId: stri
   useEffect(() => {
     const push = (text: string, cls = 'line-info') =>
       setFeed(f => [...f.slice(-200), { ts: new Date().toLocaleTimeString(), text, cls }]);
-    push(`🔁 Re-running ${testId} to verify the fix…`);
+    push(`🔁 Re-running the suite to verify ${testId} (inter-dependent tests recreate its data)…`);
     const ws = runWs(runId, (ev) => {
       const e = ev as { event: string; test_id?: string; outcome?: string; step_index?: number;
         step?: string; success?: boolean; note?: string; failed?: number; error?: string; message?: string };
@@ -549,7 +549,7 @@ function RetestOverlay({ runId, testId, onClose }: { runId: string; testId: stri
 
   const head = status === 'passed' ? { c: 'var(--green)', t: '✓ Fix verified — retest passed' }
     : status === 'failed' ? { c: 'var(--red)', t: '✗ Retest still failing' }
-    : { c: 'var(--accent)', t: `🔁 Verifying the fix — re-running ${testId}` };
+    : { c: 'var(--accent)', t: `🔁 Verifying the fix for ${testId} (re-running the suite)` };
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 1200, background: 'rgba(0,0,0,0.55)',
@@ -783,11 +783,19 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
             </span>
           </div>
         )}
+        {stage.scope === 'suite' && (
+          <div style={{ fontSize: 11 }}>
+            re-ran the <strong>whole suite</strong> (so inter-dependent tests recreate the state this test verifies)
+            {typeof stage.suite_total === 'number' && stage.suite_total > 0 &&
+              <span className="text-muted"> — {stage.suite_passed}/{stage.suite_total} passed</span>}
+          </div>
+        )}
         <div className="text-muted">
-          {rb?.ran ? 'The app was rebuilt with the fix, then the failed test was executed again against it'
-                   : 'The failed test was executed again against the patched code'}
-          {ok ? ' and passed — the fix is verified, so the PR was raised.'
-              : ' and did not pass — the PR was gated. Ensure the running app serves the fix, then re-run or open the PR manually.'}
+          {rb?.ran ? 'The app was rebuilt with the fix, then '
+                   : 'The '}
+          {stage.scope === 'suite' ? 'the suite was re-run in order and this test' : 'the failed test was executed again and it'}
+          {ok ? ' passed — the fix is verified, so the PR was raised.'
+              : ' did not pass — the PR was gated. Ensure the running app serves the fix, then re-run or open the PR manually.'}
         </div>
         {stage.restore?.ran && (
           <div className="text-muted" style={{ fontSize: 11 }}>
@@ -1178,11 +1186,20 @@ function RetestReport({ stage }: { stage?: RepairStage }) {
           {rb.output && <div style={codeBox}>{rb.output}</div>}
         </div>
       )}
+      {stage.scope === 'suite' && (
+        <div style={{ fontSize: 12 }}>
+          <SectionLabel>Verification scope</SectionLabel>
+          Re-ran the WHOLE suite in order (inter-dependent tests recreate the state this test validates)
+          {typeof stage.suite_total === 'number' && stage.suite_total > 0 &&
+            <span className="text-muted"> — suite {stage.suite_passed}/{stage.suite_total} passed; gated on {'the target test'} passing</span>}.
+        </div>
+      )}
       <div className="text-muted" style={{ fontSize: 12 }}>
-        {rb?.ran ? 'The app image was rebuilt from the fix branch and the failed test was re-run against it'
-                 : 'The failed test was executed again against the patched code (served live by the dev server)'}
-        {ok ? ' — it passed, so the pull request was raised automatically.'
-            : ' — it did not pass, so the PR was gated (the branch is prepared; open it manually once the running app serves the fix).'}
+        {rb?.ran ? 'The app image was rebuilt from the fix branch and '
+                 : 'The verification was run against the patched code (served live by the dev server) and '}
+        {stage.scope === 'suite' ? 'this test' : 'the failed test'}
+        {ok ? ' passed, so the pull request was raised automatically.'
+            : ' did not pass, so the PR was gated (the branch is prepared; open it manually once the running app serves the fix).'}
         {' '}This re-run is a real run recorded in Results and the run history.
         {stage.restore?.ran && ' Afterwards the app was restored to the run\'s baseline branch (the fix lives in the PR).'}
       </div>

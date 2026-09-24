@@ -445,6 +445,7 @@ export type RepairStage = {
   retest_blocked?: boolean; retest_note?: string;   // pr — the retest didn't pass, so the PR was gated
   // retest — the verification re-run of the failed test (fix → rebuild → retest → PR). run_id links the real run.
   run_id?: string; passed?: boolean; outcome?: string; total?: number;
+  scope?: 'suite' | 'test'; suite_passed?: number; suite_total?: number;   // re-ran the whole suite vs just the test
   rebuild?: { ran?: boolean; ok?: boolean; cmd?: string; code?: number; output?: string };   // app rebuild with the fix
   restore?: { ran?: boolean; ok?: boolean; cmd?: string; output?: string; branch?: string; commit?: string }; // baseline restore after retest
 };
