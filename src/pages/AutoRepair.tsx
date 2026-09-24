@@ -331,7 +331,17 @@ function RepairPipeline({ job, running, onUpdated }: {
         {visStages.map((meta, i) => {
           const st = stages[meta.key];
           const isActive = running && i === firstIncomplete;
-          const kind = statusOf(st, isActive);
+          let kind = statusOf(st, isActive);
+          // "Raise PR" must NOT read as done while the fix is only PREPARED and a verification retest is
+          // still gating it (the PR is opened only AFTER the retest passes). Without this the branch/commit
+          // prepared by prepare_pr shows a green ✓ before the retest even starts. Only when the retest
+          // exists do we gate: opened → done · retest failed/gated → warn · otherwise → pending.
+          if (meta.key === 'pr' && st && retestStage) {
+            const opened = st.opened?.opened;
+            kind = opened ? 'done'
+              : (retestStage.status === 'running' || !retestStage.status) ? 'pending'  // retest in flight
+              : 'warn';   // retest finished but PR not opened (failed/gated, or passed with auto-PR off) → prepared
+          }
           // A header before the FIRST stage of each agent makes the two-agent design explicit.
           const showAgentHeader = i === 0 || visStages[i - 1].agent !== meta.agent;
           return (
@@ -756,6 +766,15 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
           </span>
           {stage.run_id && <span className="text-muted">verification run {stage.run_id}</span>}
         </div>
+        {/* Which branch + commit the fix was built and re-tested against — the same info shown under Raise
+            PR, surfaced here so you can confirm the retest ran on the repair branch (not the base). */}
+        {(stage.branch || stage.commit) && (
+          <div style={{ fontSize: 11 }}>
+            built &amp; retested on{' '}
+            <span className="badge badge-accent">{stage.branch || '—'}</span>
+            {stage.commit && <span className="text-muted"> · commit {stage.commit}</span>}
+          </div>
+        )}
         {rb?.ran && (
           <div style={{ fontSize: 11 }}>
             <span className="text-muted">$ {rb.cmd}</span>{' '}
@@ -772,7 +791,9 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
         </div>
         {stage.restore?.ran && (
           <div className="text-muted" style={{ fontSize: 11 }}>
-            Baseline restored after the retest ({stage.restore.ok === false ? 'restore reported an error' : 'ok'}) — the fix lives in the PR.
+            Baseline restored after the retest ({stage.restore.ok === false ? 'restore reported an error' : 'ok'})
+            {stage.restore.branch && <> → app now on <span className="badge badge-muted">{stage.restore.branch}</span>
+              {stage.restore.commit && ` · commit ${stage.restore.commit}`}</>} — the fix lives in the PR.
           </div>
         )}
         <div className="text-muted" style={{ fontSize: 11 }}>
@@ -1138,6 +1159,15 @@ function RetestReport({ stage }: { stage?: RepairStage }) {
         <span className={`badge ${ok ? 'badge-green' : 'badge-red'}`}>{ok ? '✓ passed on retest' : '✕ still failing'}</span>
         {stage.run_id && <span className="text-muted">verification run {stage.run_id}</span>}
       </div>
+      {(stage.branch || stage.commit) && (
+        <div style={{ fontSize: 12 }}>
+          <SectionLabel>Built &amp; retested against</SectionLabel>
+          <span className="badge badge-accent">{stage.branch || '—'}</span>
+          {stage.commit && <span className="text-muted"> · commit {stage.commit}</span>}
+          {stage.restore?.branch && <span className="text-muted"> — baseline restored to {stage.restore.branch}
+            {stage.restore.commit ? ` · ${stage.restore.commit}` : ''}</span>}
+        </div>
+      )}
       {rb?.ran && (
         <div>
           <SectionLabel>App rebuilt with the fix</SectionLabel>
