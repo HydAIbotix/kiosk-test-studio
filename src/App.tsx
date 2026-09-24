@@ -36,13 +36,14 @@ export default function App() {
   const [page, setPage] = useState<Page>('dashboard');
   const nav = (p: string) => setPage(p as Page);
 
-  // Standalone Auto-Repair window: opened by Live Monitor as ?repair=<id> to make a live repair
-  // highly visible in its own window (no sidebar chrome).
+  // Standalone Auto-Repair window: opened by Live Monitor as ?repair=<id> for a single live repair, or
+  // ?repair=all for a whole batch (one repair per failed test) — the latter shows the live dashboard of
+  // every repair. Either way it's chrome-less (no sidebar) to keep the repair highly visible.
   const repairId = new URLSearchParams(window.location.search).get('repair');
   if (repairId) {
     return (
       <div style={{ minHeight: '100vh', background: 'var(--bg)', padding: 20 }}>
-        <AutoRepair standaloneRepairId={repairId} />
+        <AutoRepair standaloneRepairId={repairId === 'all' ? undefined : repairId} />
       </div>
     );
   }

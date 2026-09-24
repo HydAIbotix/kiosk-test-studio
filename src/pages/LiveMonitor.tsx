@@ -13,8 +13,12 @@ export default function LiveMonitor() {
   const [feed,      setFeed]    = useState<FeedLine[]>([]);
   const [wsOpen,    setWsOpen]  = useState(false);
   const [repair,    setRepair]  = useState<
-    { repairId: string; testId: string; url: string; done?: boolean; success?: boolean; prUrl?: string } | null
+    { repairId: string; testId: string; url: string; done?: boolean; success?: boolean; prUrl?: string;
+      batchTotal?: number; started?: number; completed?: number; prCount?: number } | null
   >(null);
+  // The repair window is opened ONCE per run — subsequent per-failure repairs stream into that same
+  // window (a batch shows the full Auto-Repair dashboard), so a 10-failure suite never spawns 10 tabs.
+  const repairOpenedRunRef = useRef<string | null>(null);
   // When the browser blocks the pop-out window (no user gesture), show the repair inline in this tab.
   const [inlineRepairId, setInlineRepairId] = useState<string | null>(null);
   // The inline repair renders as a floating in-app WINDOW with its own title-bar controls: minimize
@@ -91,28 +95,54 @@ export default function LiveMonitor() {
         return;
       } else if (e.event === 'repair_started') {
         const rid = String(e.repair_id ?? '');
-        const url = `${location.origin}${location.pathname}?repair=${encodeURIComponent(rid)}`;
-        setRepair({ repairId: rid, testId: String(e.test_id ?? ''), url });
+        const batchTotal = Number(e.batch_total ?? 1);
+        const batchIndex = Number(e.batch_index ?? 0);
+        // A batch (one repair per failed test) opens the full Auto-Repair dashboard (?repair=all) so ALL
+        // repairs stream into ONE window; a single failure keeps the focused single-repair view.
+        const target = batchTotal > 1 ? 'all' : rid;
+        const url = `${location.origin}${location.pathname}?repair=${encodeURIComponent(target)}`;
+        setRepair(r => ({ ...(r ?? {}), repairId: rid, testId: String(e.test_id ?? ''), url,
+          batchTotal, started: batchIndex + 1, done: false }));
         // Open as a normal browser tab/window (NO size features) so it gets full window controls —
-        // minimize / maximize / close. A sized `window.open(...,'width=..')` is a chromeless popup that
-        // shows only a Close button. Programmatic opens with no user gesture may still be blocked
-        // (returns null) → auto-open the repair INLINE in this tab so it still launches automatically.
-        let win: Window | null = null;
-        try { win = window.open(url, `repair_${rid}`); } catch { win = null; }
-        if (!win) setInlineRepairId(rid);
-        setFeed(f => [...f.slice(-200),
-          { ts: new Date().toLocaleTimeString(), text: `🛠 Auto-Repair started for ${e.test_id} — opening the repair view`, cls: 'line-info' },
-        ]);
+        // minimize / maximize / close. Opened ONCE per run: a 10-failure suite streams every repair into
+        // that same window instead of spawning 10 tabs. Programmatic opens with no user gesture may be
+        // blocked (returns null) → auto-open INLINE in this tab so it still launches automatically.
+        if (repairOpenedRunRef.current !== run_id) {
+          repairOpenedRunRef.current = run_id;
+          let win: Window | null = null;
+          try { win = window.open(url, `repair_${run_id}`); } catch { win = null; }
+          if (!win) setInlineRepairId(target);
+        }
+        setFeed(f => [...f.slice(-200), { ts: new Date().toLocaleTimeString(),
+          text: batchTotal > 1
+            ? `🛠 Auto-Repair ${batchIndex + 1}/${batchTotal} — repairing ${e.test_id}`
+            : `🛠 Auto-Repair started for ${e.test_id} — opening the repair view`, cls: 'line-info' }]);
         return;
       } else if (e.event === 'repair_done') {
         const ok = !!e.success;
         const prUrl = String(e.pr_url ?? '');
-        setRepair(r => (r && r.repairId === e.repair_id) ? { ...r, done: true, success: ok, prUrl } : r);
+        setRepair(r => r ? { ...r, testId: String(e.test_id ?? r.testId), success: ok, prUrl: prUrl || r.prUrl,
+          completed: (r.completed ?? 0) + 1, prCount: (r.prCount ?? 0) + (prUrl ? 1 : 0) } : r);
         const lines: FeedLine[] = [{ ts: new Date().toLocaleTimeString(),
           text: ok ? `🛠 Auto-Repair fixed ${e.test_id} — build passed` : `🛠 Auto-Repair for ${e.test_id} did not complete`,
           cls: ok ? 'line-pass' : 'line-warn' }];
         if (prUrl) lines.push({ ts: '', text: `       🔀 PR: ${prUrl}`, cls: 'line-info' });
         setFeed(f => [...f.slice(-200), ...lines]);
+        return;
+      } else if (e.event === 'repair_batch_done') {
+        setRepair(r => r ? { ...r, done: true } : r);
+        setFeed(f => [...f.slice(-200), { ts: new Date().toLocaleTimeString(),
+          text: `🛠 Auto-Repair finished — ${String(e.completed ?? '')}/${String(e.total ?? '')} test(s) processed${e.cancelled ? ' (cancelled)' : ''}`,
+          cls: 'line-info' }]);
+        return;
+      } else if (e.event === 'repair_retest_started' || e.event === 'repair_retest_done') {
+        // The retest streams in its own overlay (opened from the Auto-Repair view); just log a marker here.
+        const ok = e.event === 'repair_retest_done' ? !!e.passed : undefined;
+        setFeed(f => [...f.slice(-200), { ts: new Date().toLocaleTimeString(),
+          text: e.event === 'repair_retest_started'
+            ? `   🔁 Verifying the fix for ${e.test_id}…`
+            : `   🔁 Retest ${ok ? 'passed' : 'failed'} for ${e.test_id}`,
+          cls: ok === false ? 'line-warn' : 'line-info' }]);
         return;
       } else if (e.event === 'log') {
         // Free-text progress (e.g. Tier-3 vision recovery). Without this branch these events were
@@ -190,7 +220,9 @@ export default function LiveMonitor() {
                 style={{ fontWeight: 600, fontSize: 13, flex: 1, whiteSpace: 'nowrap',
                          overflow: 'hidden', textOverflow: 'ellipsis',
                          cursor: repairWin === 'min' ? 'pointer' : 'default' }}>
-                Auto-Repair — {repair?.testId || inlineRepairId}
+                {inlineRepairId === 'all'
+                  ? `Auto-Repair — ${repair?.completed ?? 0}/${repair?.batchTotal ?? '?'} test(s)`
+                  : `Auto-Repair — ${repair?.testId || inlineRepairId}`}
               </span>
               {repairWin !== 'min' && (
                 <button className="btn btn-secondary btn-sm" title="Minimize"
@@ -206,7 +238,7 @@ export default function LiveMonitor() {
             </div>
             {/* Body — kept mounted while minimized (display:none) so the repair keeps streaming. */}
             <div style={{ display: repairWin === 'min' ? 'none' : 'block', overflow: 'auto', flex: 1 }}>
-              <AutoRepair standaloneRepairId={inlineRepairId} />
+              <AutoRepair standaloneRepairId={inlineRepairId === 'all' ? undefined : inlineRepairId} />
             </div>
           </div>
         </>
@@ -221,18 +253,24 @@ export default function LiveMonitor() {
           <div style={{ fontSize: 24 }}>🛠️</div>
           <div style={{ flex: 1, minWidth: 220 }}>
             <div style={{ fontWeight: 600 }}>
-              Auto-Repair {repair.done ? (repair.success ? '✓ fixed & built' : 'finished') : 'running'} — {repair.testId}
+              {(repair.batchTotal ?? 1) > 1
+                ? `Auto-Repair ${repair.done ? 'finished' : 'running'} — ${repair.completed ?? 0}/${repair.batchTotal} test(s), one PR each`
+                : `Auto-Repair ${repair.done ? (repair.success ? '✓ fixed & built' : 'finished') : 'running'} — ${repair.testId}`}
             </div>
             <div className="text-muted" style={{ fontSize: 12 }}>
-              {repair.done
-                ? (repair.prUrl ? 'Fix applied, built, and a PR was raised.' : 'Fix applied and built.')
-                : 'Diagnosing with Claude and repairing the code — the repair view opened automatically.'}
+              {(repair.batchTotal ?? 1) > 1
+                ? (repair.done
+                    ? `All failures processed — ${repair.prCount ?? 0} pull request(s) raised. See the repair window for each.`
+                    : `Repairing ${repair.testId} (${repair.started ?? 1}/${repair.batchTotal})… each fix is verified and raised as its own PR.`)
+                : (repair.done
+                    ? (repair.prUrl ? 'Fix applied, built, and a PR was raised.' : 'Fix applied and built.')
+                    : 'Diagnosing with Claude and repairing the code — the repair view opened automatically.')}
             </div>
           </div>
-          <button className="btn btn-primary btn-sm" onClick={() => { const w = window.open(repair.url, `repair_${repair.repairId}`); if (!w) setInlineRepairId(repair.repairId); }}>
+          <button className="btn btn-primary btn-sm" onClick={() => { const w = window.open(repair.url, `repair_${activeRun ?? repair.repairId}`); if (!w) setInlineRepairId((repair.batchTotal ?? 1) > 1 ? 'all' : repair.repairId); }}>
             ↗ Open repair window
           </button>
-          {repair.prUrl && (
+          {repair.prUrl && (repair.batchTotal ?? 1) === 1 && (
             <a className="badge badge-accent" style={{ textDecoration: 'none' }} href={repair.prUrl} target="_blank" rel="noreferrer">🔀 View PR</a>
           )}
           <button className="btn btn-secondary btn-sm" onClick={() => { setRepair(null); setInlineRepairId(null); }}>Dismiss</button>
