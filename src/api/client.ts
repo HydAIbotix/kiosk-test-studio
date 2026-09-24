@@ -442,6 +442,9 @@ export type RepairStage = {
   commit?: string; title?: string; body?: string; diff?: string;
   opened?: RepairPrOutcome;
   deleted?: RepairPrDeleteOutcome;
+  retest_blocked?: boolean; retest_note?: string;   // pr — the retest didn't pass, so the PR was gated
+  // retest — the verification re-run of the failed test (fix → retest → PR). run_id links the real run.
+  run_id?: string; passed?: boolean; outcome?: string; total?: number;
 };
 export type RepairJob = {
   repair_id: string;

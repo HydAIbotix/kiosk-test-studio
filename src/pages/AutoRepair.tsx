@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from 'react';
-import { api, runScreenshotUrl } from '../api/client';
+import { api, runScreenshotUrl, runWs } from '../api/client';
 import type { RepairJob, RepairStage } from '../api/client';
 
 /** The self-healing arm of defect intelligence. Repairs run AUTOMATICALLY: whenever a test
@@ -22,6 +22,7 @@ const STAGES: StageMeta[] = [
   { key: 'apply',    icon: '🩹', label: 'Apply the fix',       sub: 'single-occurrence patch', agent: 'fix' },
   { key: 'test',     icon: '🧪', label: 'Unit test',           sub: 'TypeScript type-check', agent: 'fix' },
   { key: 'build',    icon: '🏗️', label: 'Build',               sub: 'tsc -b + vite build', agent: 'fix' },
+  { key: 'retest',   icon: '🔁', label: 'Re-test the fix',     sub: 're-runs the failed test to verify', agent: 'fix' },
   { key: 'pr',       icon: '🔀', label: 'Raise PR',            sub: 'branch + commit + diff', agent: 'fix' },
 ];
 
@@ -57,6 +58,13 @@ const MONO = "ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Code', 'JetBrai
 function mergedStages(job: RepairJob | null): Record<string, RepairStage> {
   if (!job) return {};
   return { ...(job.stages || {}), ...(job.result?.stages || {}) };
+}
+
+// The 'retest' stage exists only when the fix-verification re-run actually ran (repair_retest_before_pr
+// on + a green build). When it didn't, drop that row so the pipeline reads exactly as before (no phantom
+// "pending" retest step stuck between Build and Raise PR).
+function visibleStages(stages: Record<string, RepairStage>): StageMeta[] {
+  return STAGES.filter(s => s.key !== 'retest' || !!stages['retest']);
 }
 
 function relTime(iso?: string): string {
@@ -277,7 +285,8 @@ function RepairPipeline({ job, running, onUpdated }: {
   const [delConfirm, setDelConfirm] = useState(false);
 
   const stages = mergedStages(job);
-  const firstIncomplete = STAGES.findIndex(s => {
+  const visStages = visibleStages(stages);
+  const firstIncomplete = visStages.findIndex(s => {
     const st = stages[s.key]?.status;
     return st !== 'done' && st !== 'warn';
   });
@@ -286,6 +295,8 @@ function RepairPipeline({ job, running, onUpdated }: {
   const rcaStage = stages['rca'];
   const buildStage = stages['build'];
   const prStage    = stages['pr'];
+  const retestStage = stages['retest'];
+  const retestFailed = retestStage?.status === 'failed';
   const succeeded  = job.status === 'succeeded' || buildStage?.ok === true;
 
   const openPr = async () => {
@@ -312,17 +323,21 @@ function RepairPipeline({ job, running, onUpdated }: {
 
   return (
     <>
+      {/* When the verification retest is running, its live status feed pops up as an overlay window,
+          then closes on completion — revealing the (now-updated) auto-repair status underneath. */}
+      <RetestOverlayHost stage={retestStage} testId={job.test_id || ''} onDone={onUpdated} />
+
       <div style={{ padding: '8px 18px 18px' }}>
-        {STAGES.map((meta, i) => {
+        {visStages.map((meta, i) => {
           const st = stages[meta.key];
           const isActive = running && i === firstIncomplete;
           const kind = statusOf(st, isActive);
           // A header before the FIRST stage of each agent makes the two-agent design explicit.
-          const showAgentHeader = i === 0 || STAGES[i - 1].agent !== meta.agent;
+          const showAgentHeader = i === 0 || visStages[i - 1].agent !== meta.agent;
           return (
             <div key={meta.key}>
               {showAgentHeader && <AgentHeader agent={meta.agent} />}
-              <StageRow meta={meta} stage={st} kind={kind} last={i === STAGES.length - 1} />
+              <StageRow meta={meta} stage={st} kind={kind} last={i === visStages.length - 1} />
             </div>
           );
         })}
@@ -335,10 +350,15 @@ function RepairPipeline({ job, running, onUpdated }: {
           background: succeeded ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)' }}>
           {succeeded ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span className="badge badge-green">✓ Fixed &amp; built</span>
+              <span className={`badge ${retestFailed ? 'badge-yellow' : 'badge-green'}`}>
+                {retestStage?.passed ? '✓ Fixed & verified' : retestFailed ? '⚠ Built, retest failing' : '✓ Fixed & built'}
+              </span>
               <span className="text-muted" style={{ fontSize: 13 }}>
                 The agent repaired {stages['apply']?.file || 'the code'} and the build passed.
-                {prStage?.prepared && ' A PR branch is ready.'}
+                {retestStage?.passed && ` Re-running ${job.test_id || 'the test'} passed — the fix is verified.`}
+                {retestFailed && ` But re-running ${job.test_id || 'the test'} still failed, so the PR was not raised automatically`
+                  + ' (check the running app serves the fixed code) — you can open it manually below.'}
+                {!retestStage && prStage?.prepared && ' A PR branch is ready.'}
               </span>
               {prStage?.prepared && !prStage?.opened?.opened && (
                 prConfirm ? (
@@ -461,6 +481,94 @@ function RcaReviewPanel({ job, onUpdated }: { job: RepairJob; onUpdated: () => v
         </div>
       )}
       {err && <div style={{ fontSize: 12, marginTop: 8, color: 'var(--red)' }}>✕ {err}</div>}
+    </div>
+  );
+}
+
+// ── Retest overlay (live status feed of the fix-verification re-run) ─────────────
+// While the Auto-Repair agent re-runs the failed test to verify the fix, its live feed pops up as a
+// floating overlay window. It closes automatically when the retest finishes — revealing the updated
+// repair status underneath (with the PR raised on a pass). Subscribes directly to the retest run's
+// WebSocket so the feed is real-time; the parent's 2.5s poll only governs when this mounts/unmounts.
+
+function RetestOverlayHost({ stage, testId, onDone }: {
+  stage?: RepairStage; testId: string; onDone: () => void;
+}) {
+  const [closed, setClosed] = useState<string>('');   // a retest run_id we've already dismissed
+  const runId = stage?.run_id || '';
+  const show = stage?.status === 'running' && !!runId && runId !== closed;
+  if (!show) return null;
+  return <RetestOverlay runId={runId} testId={testId}
+    onClose={() => { setClosed(runId); onDone(); }} />;
+}
+
+function RetestOverlay({ runId, testId, onClose }: { runId: string; testId: string; onClose: () => void }) {
+  const [feed, setFeed]     = useState<{ ts: string; text: string; cls: string }[]>([]);
+  const [status, setStatus] = useState<'running' | 'passed' | 'failed'>('running');
+  const feedRef   = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    const push = (text: string, cls = 'line-info') =>
+      setFeed(f => [...f.slice(-200), { ts: new Date().toLocaleTimeString(), text, cls }]);
+    push(`🔁 Re-running ${testId} to verify the fix…`);
+    const ws = runWs(runId, (ev) => {
+      const e = ev as { event: string; test_id?: string; outcome?: string; step_index?: number;
+        step?: string; success?: boolean; note?: string; failed?: number; error?: string; message?: string };
+      if (e.event === 'test_started') push(`▶ [${e.test_id}] started`);
+      else if (e.event === 'step_result') push(`${e.success ? '  ✓' : '  ✗'} step ${e.step_index}: ${e.step}`, e.success ? 'line-pass' : 'line-fail');
+      else if (e.event === 'test_result') push(`  [${e.test_id}] ${e.outcome === 'passed' ? '✓ PASS' : '✗ FAIL'}`, e.outcome === 'passed' ? 'line-pass' : 'line-fail');
+      else if (e.event === 'log' && e.message) push(String(e.message), 'line-muted');
+      else if (e.event === 'run_completed') {
+        const ok = !(e.failed && e.failed > 0);
+        setStatus(ok ? 'passed' : 'failed');
+        push(ok ? '✓ Retest passed — the fix is verified' : '✗ Retest still failing', ok ? 'line-pass' : 'line-fail');
+        closeTimer.current = window.setTimeout(onClose, 1800);
+      } else if (e.event === 'run_error') {
+        setStatus('failed');
+        push(`✗ Retest error: ${e.error || ''}`, 'line-fail');
+        closeTimer.current = window.setTimeout(onClose, 1800);
+      }
+    });
+    return () => { ws.close(); if (closeTimer.current) window.clearTimeout(closeTimer.current); };
+    // Re-subscribe only when the retest run changes; onClose is stable for this mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId, testId]);
+
+  useEffect(() => { if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight; }, [feed]);
+
+  const head = status === 'passed' ? { c: 'var(--green)', t: '✓ Fix verified — retest passed' }
+    : status === 'failed' ? { c: 'var(--red)', t: '✗ Retest still failing' }
+    : { c: 'var(--accent)', t: `🔁 Verifying the fix — re-running ${testId}` };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1200, background: 'rgba(0,0,0,0.55)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="card" onClick={(e) => e.stopPropagation()}
+        style={{ width: 'min(720px, 94vw)', maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+          overflow: 'hidden', border: `1px solid ${head.c}`, background: 'var(--surface)', color: 'var(--text)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+          <span className={status === 'running' ? 'blink' : ''} style={{ fontSize: 18 }}>
+            {status === 'passed' ? '✅' : status === 'failed' ? '⚠️' : '🔁'}
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: head.c }}>{head.t}</div>
+            <div className="text-muted" style={{ fontSize: 11 }}>Verification re-run · {runId}</div>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={onClose}>
+            {status === 'running' ? 'Hide' : 'Close'}
+          </button>
+        </div>
+        <div className="live-feed" ref={feedRef} style={{ flex: 1, overflow: 'auto', margin: 0, borderRadius: 0 }}>
+          {feed.length === 0
+            ? <span className="line-muted">Connecting to the retest…</span>
+            : feed.map((l, i) => (
+                <div key={i} className={l.cls}>
+                  {l.ts && <span style={{ color: 'var(--muted)', marginRight: 8 }}>{l.ts}</span>}{l.text}
+                </div>
+              ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -637,6 +745,28 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
     );
   }
 
+  if (stageKey === 'retest') {
+    const ok = stage.passed === true;
+    return (
+      <div style={{ marginTop: 8, fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span className={`badge ${ok ? 'badge-green' : 'badge-red'}`}>
+            {ok ? '✓ passed on retest' : '✕ still failing'}
+          </span>
+          {stage.run_id && <span className="text-muted">verification run {stage.run_id}</span>}
+        </div>
+        <div className="text-muted">
+          The failed test was executed again against the patched code
+          {ok ? ' and passed — the fix is verified, so the PR was raised.'
+              : ' and did not pass — the PR was gated. Ensure the running app serves the fix, then re-run or open the PR manually.'}
+        </div>
+        <div className="text-muted" style={{ fontSize: 11 }}>
+          This re-run is recorded in Results and the run history like any other run.
+        </div>
+      </div>
+    );
+  }
+
   if (stageKey === 'pr') {
     return (
       <div style={{ marginTop: 8, fontSize: 12 }}>
@@ -766,6 +896,7 @@ function DetailedReportWindow({ job, onClose }: { job: RepairJob; onClose: () =>
                   <ApplyReport stage={stages['apply']} />
                   <CmdReport title="Unit test (TypeScript type-check)" icon="🧪" stage={stages['test']} anchor="sec-test" />
                   <CmdReport title="Build (tsc -b + vite build)" icon="🏗️" stage={stages['build']} anchor="sec-build" />
+                  {stages['retest'] && <RetestReport stage={stages['retest']} />}
                   <PrReport stage={stages['pr']} />
                 </ReportAgent>
               </>
@@ -982,6 +1113,25 @@ function PrReport({ stage }: { stage?: RepairStage }) {
   );
 }
 
+function RetestReport({ stage }: { stage?: RepairStage }) {
+  if (!stage) return null;
+  const ok = stage.passed === true;
+  return (
+    <ReportBlock icon="🔁" title="Re-test — verifying the fix by re-running the failed test" anchor="sec-retest">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 }}>
+        <span className={`badge ${ok ? 'badge-green' : 'badge-red'}`}>{ok ? '✓ passed on retest' : '✕ still failing'}</span>
+        {stage.run_id && <span className="text-muted">verification run {stage.run_id}</span>}
+      </div>
+      <div className="text-muted" style={{ fontSize: 12 }}>
+        The failed test was executed again against the patched code{ok
+          ? ' and passed — so the pull request was raised automatically.'
+          : ' and did not pass, so the PR was gated (the branch is prepared; open it manually once the running app serves the fix).'}
+        {' '}This re-run is a real run recorded in Results and the run history.
+      </div>
+    </ReportBlock>
+  );
+}
+
 // ── Executive Summary (default report view) — consolidates the technical detail into charts ──────
 // Audience: leadership. Every chart carries a "View technical details →" link back to its section.
 
@@ -998,6 +1148,9 @@ function ExecutiveSummary({ job, stages, onJump }: {
 }) {
   const rca = stages['rca']; const retrieve = stages['retrieve']; const diagnose = stages['diagnose'];
   const apply = stages['apply']; const build = stages['build']; const pr = stages['pr'];
+  const retest = stages['retest'];
+  const retestFailed = retest?.status === 'failed';
+  const retestPassed = retest?.status === 'done' && retest?.passed === true;
   const patch = diagnose?.patch;
   const verdict = rca?.verdict || 'skipped';
   const docsRead = rca?.hits?.length || 0;
@@ -1016,9 +1169,14 @@ function ExecutiveSummary({ job, stages, onJump }: {
   const rcaDisagreed = patchVerified && verdict !== 'code_bug' && verdict !== 'skipped';
   const cancelled = job.status === 'cancelled';
 
-  const outcome = succeeded
-    ? { color: 'var(--green)', bg: 'rgba(34,197,94,0.12)', icon: '✓', head: 'Bug fixed & verified',
-        line: `The agent found the root cause, patched ${fileChanged || 'the code'} and the build passed${pr?.prepared ? ' — a pull request is ready for review.' : '.'}` }
+  const outcome = succeeded && retestFailed
+    ? { color: 'var(--yellow)', bg: 'rgba(234,179,8,0.12)', icon: '⚠', head: 'Fixed & built — retest still failing',
+        line: `The agent patched ${fileChanged || 'the code'} and the build passed, but re-running ${job.test_id || 'the test'} still failed, so the PR was gated. Confirm the running app serves the fixed code, then re-run or open the PR manually.` }
+    : succeeded
+    ? { color: 'var(--green)', bg: 'rgba(34,197,94,0.12)', icon: '✓', head: retestPassed ? 'Bug fixed & verified by retest' : 'Bug fixed & verified',
+        line: `The agent found the root cause, patched ${fileChanged || 'the code'} and the build passed`
+          + (retestPassed ? ` — re-running ${job.test_id || 'the test'} passed and a pull request was raised.`
+             : pr?.prepared ? ' — a pull request is ready for review.' : '.') }
     : rcaStopped
       ? { color: 'var(--yellow)', bg: 'rgba(234,179,8,0.12)', icon: '🛑', head: `Stopped — ${VERDICT_LABEL[verdict] || verdict}`,
           line: rca?.rationale || job.rca?.rationale || 'The RCA agent judged this is not an app-code bug, so no code was changed.' }
@@ -1145,12 +1303,13 @@ function SummaryStepper({ job, stages, onJump }: {
   job: RepairJob; stages: Record<string, RepairStage>; onJump: (a: string) => void;
 }) {
   const running = job.status === 'pending' || job.status === 'running' || job.status === 'cancelling';
-  const firstIncomplete = STAGES.findIndex(s => {
+  const visStages = visibleStages(stages);
+  const firstIncomplete = visStages.findIndex(s => {
     const st = stages[s.key]?.status; return st !== 'done' && st !== 'warn';
   });
   return (
     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-      {STAGES.map((meta, i) => {
+      {visStages.map((meta, i) => {
         const kind = statusOf(stages[meta.key], running && i === firstIncomplete);
         const dot = DOT[kind];
         return (
