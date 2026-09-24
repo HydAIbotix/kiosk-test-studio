@@ -747,6 +747,7 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
 
   if (stageKey === 'retest') {
     const ok = stage.passed === true;
+    const rb = stage.rebuild;
     return (
       <div style={{ marginTop: 8, fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -755,11 +756,25 @@ function StageDetail({ stageKey, stage }: { stageKey: string; stage: RepairStage
           </span>
           {stage.run_id && <span className="text-muted">verification run {stage.run_id}</span>}
         </div>
+        {rb?.ran && (
+          <div style={{ fontSize: 11 }}>
+            <span className="text-muted">$ {rb.cmd}</span>{' '}
+            <span style={{ color: rb.ok === false ? 'var(--red)' : 'var(--green)' }}>
+              {rb.ok === false ? 'rebuild failed' : 'rebuilt with the fix'}
+            </span>
+          </div>
+        )}
         <div className="text-muted">
-          The failed test was executed again against the patched code
+          {rb?.ran ? 'The app was rebuilt with the fix, then the failed test was executed again against it'
+                   : 'The failed test was executed again against the patched code'}
           {ok ? ' and passed — the fix is verified, so the PR was raised.'
               : ' and did not pass — the PR was gated. Ensure the running app serves the fix, then re-run or open the PR manually.'}
         </div>
+        {stage.restore?.ran && (
+          <div className="text-muted" style={{ fontSize: 11 }}>
+            Baseline restored after the retest ({stage.restore.ok === false ? 'restore reported an error' : 'ok'}) — the fix lives in the PR.
+          </div>
+        )}
         <div className="text-muted" style={{ fontSize: 11 }}>
           This re-run is recorded in Results and the run history like any other run.
         </div>
@@ -1116,17 +1131,30 @@ function PrReport({ stage }: { stage?: RepairStage }) {
 function RetestReport({ stage }: { stage?: RepairStage }) {
   if (!stage) return null;
   const ok = stage.passed === true;
+  const rb = stage.rebuild;
   return (
-    <ReportBlock icon="🔁" title="Re-test — verifying the fix by re-running the failed test" anchor="sec-retest">
+    <ReportBlock icon="🔁" title="Re-test — rebuild with the fix, then re-run the failed test" anchor="sec-retest">
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 }}>
         <span className={`badge ${ok ? 'badge-green' : 'badge-red'}`}>{ok ? '✓ passed on retest' : '✕ still failing'}</span>
         {stage.run_id && <span className="text-muted">verification run {stage.run_id}</span>}
       </div>
+      {rb?.ran && (
+        <div>
+          <SectionLabel>App rebuilt with the fix</SectionLabel>
+          <div style={{ fontSize: 11, marginBottom: 4 }}>
+            <span className="text-muted">$ {rb.cmd}</span>{' '}
+            <span style={{ color: rb.ok === false ? 'var(--red)' : 'var(--green)' }}>{rb.ok === false ? `exit ${rb.code ?? '≠0'}` : 'exit 0'}</span>
+          </div>
+          {rb.output && <div style={codeBox}>{rb.output}</div>}
+        </div>
+      )}
       <div className="text-muted" style={{ fontSize: 12 }}>
-        The failed test was executed again against the patched code{ok
-          ? ' and passed — so the pull request was raised automatically.'
-          : ' and did not pass, so the PR was gated (the branch is prepared; open it manually once the running app serves the fix).'}
+        {rb?.ran ? 'The app image was rebuilt from the fix branch and the failed test was re-run against it'
+                 : 'The failed test was executed again against the patched code (served live by the dev server)'}
+        {ok ? ' — it passed, so the pull request was raised automatically.'
+            : ' — it did not pass, so the PR was gated (the branch is prepared; open it manually once the running app serves the fix).'}
         {' '}This re-run is a real run recorded in Results and the run history.
+        {stage.restore?.ran && ' Afterwards the app was restored to the run\'s baseline branch (the fix lives in the PR).'}
       </div>
     </ReportBlock>
   );
